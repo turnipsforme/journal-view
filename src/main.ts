@@ -1,5 +1,7 @@
 import { MarkdownView, Plugin, TFile, WorkspaceLeaf, debounce } from "obsidian";
 import { DailyNoteResolver } from "./dailyNotes";
+import { WorkspaceEditorBridge } from "./editor";
+import { FilteredDailyNoteIndex, filterRulesSetting } from "./filter";
 import { createMoment } from "./moment";
 import type { Moment } from "./moment";
 import { DAY_KEY_FORMAT, DailyNoteIndex } from "./noteIndex";
@@ -12,61 +14,126 @@ import {
 	clampLoadedDays,
 	clampSaveDelay,
 } from "./settings";
-import type { DaySortDirection } from "./settings";
+import type { DailyHeaderStyle, DaySortDirection, OpenNoteAction } from "./settings";
 import { JournalView, VIEW_TYPE_JOURNAL } from "./view";
+
+type EntryDirection = -1 | 0 | 1;
+
+interface InitialJournalTarget {
+	date: Moment;
+	focusAtEnd: boolean;
+	revealThroughFilters: boolean;
+}
 
 export default class JournalViewPlugin extends Plugin {
 	settings: JournalViewSettings = { ...DEFAULT_SETTINGS };
 	daily!: DailyNoteResolver;
 	index!: DailyNoteIndex;
+	filteredIndex!: FilteredDailyNoteIndex;
+	readonly workspaceEditors = new WorkspaceEditorBridge(this.app);
 	private dailyNoteActions = new Map<MarkdownView, HTMLElement>();
-	/** Target dates handed to journal views before Obsidian constructs them. */
-	private initialDates = new Map<WorkspaceLeaf, Moment>();
+	private settingsTab: JournalViewSettingTab | null = null;
+	private filterControlListeners = new Set<() => void>();
+	/** Navigation handed to journal views before Obsidian constructs them. */
+	private initialTargets = new Map<WorkspaceLeaf, InitialJournalTarget>();
 
 	private notifyViews = debounce(
-		() => {
-			for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_JOURNAL)) {
-				const view = leaf.view;
-				if (view instanceof JournalView) void view.onSettingsChanged();
-			}
-		},
+		() => this.updateViews(),
 		400,
 		true,
 	);
+
+	private updateViews(): void {
+		for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_JOURNAL)) {
+			const view = leaf.view;
+			if (view instanceof JournalView) void view.onSettingsChanged();
+		}
+	}
+
+	/** Applies modal controls live without the settings tab's typing debounce. */
+	notifyViewsImmediately(): void {
+		this.updateViews();
+	}
+
+	/** Refreshes metadata filtering before open views read the new rule set. */
+	notifyFiltersImmediately(): void {
+		this.filteredIndex.ensureCurrent();
+		this.syncFilterControls();
+		this.updateViews();
+	}
+
+	/** Keeps the modal and settings-tab copies of the note-only toggle in sync. */
+	onFilterControlsChanged(listener: () => void): () => void {
+		this.filterControlListeners.add(listener);
+		return () => this.filterControlListeners.delete(listener);
+	}
+
+	private syncFilterControls(): void {
+		this.settingsTab?.syncFilterControls();
+		for (const listener of this.filterControlListeners) listener();
+	}
 
 	async onload(): Promise<void> {
 		await this.loadSettings();
 		this.daily = new DailyNoteResolver(this.app, () => this.settings);
 		this.index = new DailyNoteIndex(this.app, this.daily);
+		this.filteredIndex = new FilteredDailyNoteIndex(this.app, this.index, () => this.settings.filterRules);
+		// onLayoutReady queues callbacks without returning an EventRef, so they
+		// need an explicit guard when the plugin unloads before layout restoration.
+		let layoutReadyCallbacksEnabled = true;
+		this.register(() => {
+			layoutReadyCallbacksEnabled = false;
+		});
 
 		// The index has to be registered before any view, so it is already up to
 		// date by the time a view reacts to the same vault event.
 		this.app.workspace.onLayoutReady(() => {
+			if (!layoutReadyCallbacksEnabled) return;
 			this.index.rebuild();
+			this.filteredIndex.rebuild();
 			this.syncDailyNoteActions();
 		});
 		this.registerEvent(
 			this.app.vault.on("create", (file) => {
-				if (file instanceof TFile) this.index.handleCreate(file);
+				if (file instanceof TFile) {
+					this.index.handleCreate(file);
+					this.filteredIndex.ensureCurrent();
+				}
 			}),
 		);
 		this.registerEvent(
 			this.app.vault.on("delete", (file) => {
 				this.index.handleDelete(file.path);
+				this.filteredIndex.ensureCurrent();
 			}),
 		);
 		this.registerEvent(
 			this.app.vault.on("rename", (file, oldPath) => {
 				this.index.handleDelete(oldPath);
 				if (file instanceof TFile) this.index.handleCreate(file);
+				this.filteredIndex.ensureCurrent();
 				this.syncDailyNoteActions();
+			}),
+		);
+		this.registerEvent(
+			this.app.metadataCache.on("changed", (file) => {
+				this.filteredIndex.handleMetadataChange(file);
 			}),
 		);
 		this.registerEvent(this.app.workspace.on("file-open", () => this.syncDailyNoteActions()));
 		this.registerEvent(this.app.workspace.on("layout-change", () => this.syncDailyNoteActions()));
+		this.registerEvent(
+			this.app.workspace.on("active-leaf-change", (leaf) => this.workspaceEditors.onActiveLeafChange(leaf)),
+		);
 		this.register(() => this.clearDailyNoteActions());
 
 		this.registerView(VIEW_TYPE_JOURNAL, (leaf) => new JournalView(leaf, this));
+		this.app.workspace.onLayoutReady(() => {
+			if (!layoutReadyCallbacksEnabled || !this.settings.openJournalOnStartup) return;
+			void this.activateView(false).catch((error: unknown) => {
+				console.error("Journal View: could not open on startup", error);
+			});
+		});
 
 		this.addRibbonIcon("notebook", "Open journal", () => void this.activateView());
 
@@ -85,15 +152,23 @@ export default class JournalViewPlugin extends Plugin {
 		this.addCommand({
 			id: "go-to-today",
 			name: "Go to today",
-			checkCallback: (checking) => {
-				const view = this.app.workspace.getActiveViewOfType(JournalView);
-				if (!view) return false;
-				if (!checking) view.goToToday(true);
-				return true;
-			},
+			callback: () => void this.openJournalEntry(0),
 		});
 
-		this.addSettingTab(new JournalViewSettingTab(this.app, this));
+		this.addCommand({
+			id: "go-to-yesterday",
+			name: "Go to yesterday",
+			callback: () => void this.openJournalEntry(-1),
+		});
+
+		this.addCommand({
+			id: "go-to-tomorrow",
+			name: "Go to tomorrow",
+			callback: () => void this.openJournalEntry(1),
+		});
+
+		this.settingsTab = new JournalViewSettingTab(this.app, this);
+		this.addSettingTab(this.settingsTab);
 	}
 
 	onunload(): void {
@@ -109,7 +184,12 @@ export default class JournalViewPlugin extends Plugin {
 		});
 	}
 
-	async activateView(forceNewTab = false, date?: Moment): Promise<void> {
+	async activateView(
+		forceNewTab = false,
+		date?: Moment,
+		focusAtEnd = false,
+		revealThroughFilters = false,
+	): Promise<void> {
 		const { workspace } = this.app;
 		const existing = workspace.getLeavesOfType(VIEW_TYPE_JOURNAL);
 
@@ -120,24 +200,55 @@ export default class JournalViewPlugin extends Plugin {
 		} else {
 			leaf = workspace.getLeaf(true);
 			created = true;
-			if (date) this.initialDates.set(leaf, date.clone().startOf("day"));
+			if (date) {
+				this.initialTargets.set(leaf, {
+					date: date.clone().startOf("day"),
+					focusAtEnd,
+					revealThroughFilters,
+				});
+			}
 			try {
 				await leaf.setViewState({ type: VIEW_TYPE_JOURNAL, active: true });
 			} finally {
 				// The view normally consumes this during construction; also clear it
 				// when construction fails so a leaf is never left holding stale state.
-				this.initialDates.delete(leaf);
+				this.initialTargets.delete(leaf);
 			}
 		}
 		await workspace.revealLeaf(leaf);
-		if (date && !created && leaf.view instanceof JournalView) leaf.view.goToDate(date, true);
+		if (date && !created && leaf.view instanceof JournalView) {
+			if (revealThroughFilters) leaf.view.goToCommandDate(date, true);
+			else leaf.view.goToDate(date, true);
+		}
 	}
 
-	/** Consumed by a JournalView constructor so its first build uses the target date. */
-	consumeInitialDate(leaf: WorkspaceLeaf): Moment | undefined {
-		const date = this.initialDates.get(leaf);
-		this.initialDates.delete(leaf);
-		return date;
+	/** Consumed by a JournalView constructor so its first build uses the target. */
+	consumeInitialTarget(leaf: WorkspaceLeaf): InitialJournalTarget | undefined {
+		const target = this.initialTargets.get(leaf);
+		this.initialTargets.delete(leaf);
+		return target;
+	}
+
+	private async openJournalEntry(direction: EntryDirection): Promise<void> {
+		const date = this.entryDate(direction);
+		const { workspace } = this.app;
+		const existing = workspace.getLeavesOfType(VIEW_TYPE_JOURNAL);
+		const active = workspace.getActiveViewOfType(JournalView);
+		const leaf = active?.leaf ?? existing[0];
+		if (!leaf) {
+			await this.activateView(false, date, true, direction !== 0);
+			return;
+		}
+
+		await workspace.revealLeaf(leaf);
+		const view = leaf.view;
+		if (!(view instanceof JournalView)) return;
+		if (direction === 0) view.goToToday(true);
+		else view.goToCommandDate(date, true);
+	}
+
+	private entryDate(direction: EntryDirection): Moment {
+		return createMoment().startOf("day").add(direction, "days");
 	}
 
 	/** Keeps a native view-header action on every open daily-note pane. */
@@ -187,7 +298,7 @@ export default class JournalViewPlugin extends Plugin {
 	async loadSettings(): Promise<void> {
 		const saved: unknown = await this.loadData();
 		if (!isRecord(saved)) {
-			this.settings = { ...DEFAULT_SETTINGS };
+			this.settings = { ...DEFAULT_SETTINGS, filterRules: [], displayProperties: [] };
 			return;
 		}
 		this.settings = {
@@ -195,6 +306,7 @@ export default class JournalViewPlugin extends Plugin {
 			folder: stringSetting(saved.folder, DEFAULT_SETTINGS.folder),
 			templatePath: stringSetting(saved.templatePath, DEFAULT_SETTINGS.templatePath),
 			headerFormat: headerFormatSetting(saved.headerFormat, typeof saved.showMonthSeparators === "boolean"),
+			headerStyle: headerStyleSetting(saved.headerStyle, saved.dayHeadingStyle),
 			showMonthSeparators: booleanSetting(
 				saved.showMonthSeparators,
 				DEFAULT_SETTINGS.showMonthSeparators,
@@ -207,15 +319,31 @@ export default class JournalViewPlugin extends Plugin {
 			maxLoadedDays: loadedDaysSetting(saved.maxLoadedDays),
 			richEditor: booleanSetting(saved.richEditor, DEFAULT_SETTINGS.richEditor),
 			focusTodayOnOpen: booleanSetting(saved.focusTodayOnOpen, DEFAULT_SETTINGS.focusTodayOnOpen),
+			openJournalOnStartup: booleanSetting(
+				saved.openJournalOnStartup,
+				DEFAULT_SETTINGS.openJournalOnStartup,
+			),
 			hideEmptyDays: booleanSetting(saved.hideEmptyDays, DEFAULT_SETTINGS.hideEmptyDays),
+			filterRules: filterRulesSetting(saved.filterRules),
+			showTags: booleanSetting(saved.showTags, DEFAULT_SETTINGS.showTags),
+			displayProperties: propertyNamesSetting(saved.displayProperties),
+			hideDailyNoteH1: booleanSetting(saved.hideDailyNoteH1, DEFAULT_SETTINGS.hideDailyNoteH1),
+			hideTodayBackground: booleanSetting(saved.hideTodayBackground, DEFAULT_SETTINGS.hideTodayBackground),
+			openNoteAction: openNoteActionSetting(saved.openNoteAction),
+			hideHeaderSeparator: booleanSetting(
+				saved.hideHeaderSeparator,
+				DEFAULT_SETTINGS.hideHeaderSeparator,
+			),
 			daySortDirection: daySortDirectionSetting(saved.daySortDirection),
 		};
 	}
 
-	async saveSettings(): Promise<void> {
+	async saveSettings(scheduleViewUpdate = true): Promise<void> {
+		this.syncFilterControls();
 		await this.saveData(this.settings);
+		this.filteredIndex?.ensureCurrent();
 		this.syncDailyNoteActions();
-		this.notifyViews();
+		if (scheduleViewUpdate) this.notifyViews();
 	}
 }
 
@@ -236,6 +364,12 @@ function headerFormatSetting(value: unknown, hasGroupingSetting: boolean): strin
 	return format;
 }
 
+function headerStyleSetting(value: unknown, legacyValue?: unknown): DailyHeaderStyle {
+	if (value === "subtle" || value === "h1" || value === "hidden") return value;
+	// Earlier fork releases used a separate setting for the same date typography.
+	return legacyValue === "h1" ? "h1" : DEFAULT_SETTINGS.headerStyle;
+}
+
 function saveDelaySetting(value: unknown): number {
 	if (typeof value !== "number" || !Number.isFinite(value)) return DEFAULT_SETTINGS.saveDelay;
 	return clampSaveDelay(value);
@@ -250,6 +384,25 @@ function booleanSetting(value: unknown, fallback: boolean): boolean {
 	return typeof value === "boolean" ? value : fallback;
 }
 
+function propertyNamesSetting(value: unknown): string[] {
+	if (!Array.isArray(value)) return [];
+	const names: string[] = [];
+	const seen = new Set<string>();
+	for (const item of value) {
+		if (typeof item !== "string") continue;
+		const name = item.trim();
+		const key = name.toLocaleLowerCase();
+		if (!name || key === "tags" || seen.has(key)) continue;
+		seen.add(key);
+		names.push(name);
+	}
+	return names;
+}
+
 function daySortDirectionSetting(value: unknown): DaySortDirection {
 	return value === "descending" ? "descending" : DEFAULT_SETTINGS.daySortDirection;
+}
+
+function openNoteActionSetting(value: unknown): OpenNoteAction {
+	return value === "hidden" || value === "heading" ? value : DEFAULT_SETTINGS.openNoteAction;
 }

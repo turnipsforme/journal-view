@@ -6,6 +6,7 @@ import { findLiteralRanges } from "./findText";
 import type { FindRange } from "./findText";
 import { createMoment } from "./moment";
 import type { Moment } from "./moment";
+import { projectNoteBody } from "./noteProjection";
 
 const REMOTE_YIELD_EVERY = 12;
 
@@ -153,6 +154,10 @@ export class JournalFind {
 		this.matches = [];
 
 		for (const [sectionIndex, section] of this.host.sections.entries()) {
+			if (section.isHidden) {
+				section.setFindState(query, this.caseSensitive, [], null);
+				continue;
+			}
 			const ranges = findLiteralRanges(section.searchText(), query, this.caseSensitive);
 			section.setFindState(query, this.caseSensitive, ranges, null);
 			for (const range of ranges) this.matches.push({ section, sectionIndex, key: section.key, ...range });
@@ -233,7 +238,8 @@ export class JournalFind {
 		const loadedKeys = new Set(this.host.sections.map((section) => section.key));
 		const edge = direction > 0 ? this.host.sections[this.host.sections.length - 1].key : this.host.sections[0].key;
 		const dateDirection = (direction * this.host.sortStep()) as -1 | 1;
-		const keys = this.host.plugin.index.keysFrom(edge, dateDirection);
+		this.host.plugin.filteredIndex.ensureCurrent();
+		const keys = this.host.plugin.filteredIndex.keysFrom(edge, dateDirection);
 		const today = createMoment().startOf("day");
 
 		try {
@@ -254,7 +260,10 @@ export class JournalFind {
 					console.warn(`Journal View: could not search ${file.path}`, error);
 					continue;
 				}
-				const body = content.slice(getFrontMatterInfo(content).contentStart);
+				const body = projectNoteBody(
+					content.slice(getFrontMatterInfo(content).contentStart),
+					this.host.plugin.settings.hideDailyNoteH1,
+				).editorBody;
 				if (findLiteralRanges(body, query, this.caseSensitive).length) {
 					await this.host.loadFindDate(date);
 					if (token !== this.scanToken || !this.open || query !== this.input.value) return;
