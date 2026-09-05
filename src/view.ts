@@ -15,6 +15,7 @@ import type { FindRange } from "./findText";
 import { createMoment } from "./moment";
 import type { Moment } from "./moment";
 import { listenForReaderScrollIntent } from "./readerInput";
+import { completedTasksPlugin } from "./completedTasks";
 
 export const VIEW_TYPE_JOURNAL = "journal-view";
 
@@ -96,6 +97,8 @@ export class JournalView extends ItemView implements DayHost, AnchorHost, Editor
 	private commandTargetOffset: number | null = null;
 	/** Invalidates delayed command navigation when a newer destination takes over. */
 	private commandNavigationToken = 0;
+	private lastTaskSort = Date.now();
+	private lastEditedDay: DaySection | null = null;
 	/** True while a pointer is held down in the scroller (scrollbar, selection). */
 	private pointerHeld = false;
 	/** Scroll position and pace, used to keep editor work out of a gesture. */
@@ -144,6 +147,9 @@ export class JournalView extends ItemView implements DayHost, AnchorHost, Editor
 			this.showFind();
 			return false;
 		});
+		this.scope.register(["Mod"], "a", () => {
+			if (this.sections.some((section) => section.expandSelection())) return false;
+		});
 		this.initialTarget = plugin.consumeInitialTarget(leaf);
 		// Opening a note (from a day header, or a link inside a day) must not
 		// replace the journal itself.
@@ -166,6 +172,7 @@ export class JournalView extends ItemView implements DayHost, AnchorHost, Editor
 
 	async onOpen(): Promise<void> {
 		this.containerEl.addClass("journal-view");
+		this.syncDisplaySettings();
 		this.contentEl.empty();
 		this.contentEl.addClass("journal-content");
 
@@ -189,6 +196,14 @@ export class JournalView extends ItemView implements DayHost, AnchorHost, Editor
 		this.registerDomEvent(window, "pointerup", () => (this.pointerHeld = false), { passive: true });
 		this.registerDomEvent(this.containerEl, "keydown", (event) => this.onKeydown(event), { capture: true });
 		this.registerVaultEvents();
+		this.registerInterval(window.setInterval(() => {
+			if (this.app.workspace.getActiveViewOfType(JournalView) !== this) return;
+			const interval = completedTasksPlugin(this.app)?.settings.intervalSeconds ?? 0;
+			if (!Number.isFinite(interval) || interval <= 0 || Date.now() - this.lastTaskSort < interval * 1000) return;
+			this.lastTaskSort = Date.now();
+			const day = this.sections.find((section) => section.hasFocus) ?? this.lastEditedDay;
+			day?.sortCompletedTasks();
+		}, 500));
 
 		const initialTarget = this.initialTarget;
 		this.initialTarget = undefined;
@@ -738,6 +753,14 @@ export class JournalView extends ItemView implements DayHost, AnchorHost, Editor
 	}
 
 	private onKeydown(event: KeyboardEvent): void {
+		if (event.defaultPrevented) return;
+		if (event.key.toLowerCase() === "a" && (event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey) {
+			if (this.sections.some((section) => section.expandSelection())) {
+				event.preventDefault();
+				event.stopPropagation();
+			}
+			return;
+		}
 		if (
 			event.key.toLowerCase() !== "f" ||
 			(!event.metaKey && !event.ctrlKey) ||
@@ -1293,7 +1316,8 @@ export class JournalView extends ItemView implements DayHost, AnchorHost, Editor
 		this.syncDateSeparators();
 	}
 
-	onDayContentChanged(_day: DaySection): void {
+	onDayContentChanged(day: DaySection): void {
+		if (day.hasFocus) this.lastEditedDay = day;
 		this.find?.sectionsChanged();
 	}
 
@@ -1348,6 +1372,21 @@ export class JournalView extends ItemView implements DayHost, AnchorHost, Editor
 		this.toolbar?.setFilter(isFilterActive(this.plugin.settings));
 	}
 
+	private syncDisplaySettings(): void {
+		this.containerEl.toggleClass("journal-today-background-hidden", this.plugin.settings.hideTodayBackground);
+		this.containerEl.toggleClass("journal-heading-style-h1", this.plugin.settings.headerStyle === "h1");
+		this.containerEl.toggleClass(
+			"journal-open-note-button-hidden",
+			this.plugin.settings.openNoteAction === "hidden" ||
+				(this.plugin.settings.openNoteAction === "heading" && this.plugin.settings.headerStyle !== "hidden"),
+		);
+		this.containerEl.toggleClass(
+			"journal-header-separator-hidden",
+			this.plugin.settings.hideHeaderSeparator,
+		);
+		for (const section of this.sections) section.syncHeaderSettings();
+	}
+
 	/** Settings whose existing day DOM cannot adopt safely in place. */
 	private rebuildSettingsSignature(): string {
 		const settings = this.plugin.settings;
@@ -1359,6 +1398,7 @@ export class JournalView extends ItemView implements DayHost, AnchorHost, Editor
 			headerStyle: settings.headerStyle,
 			showMonthSeparators: settings.showMonthSeparators,
 			groupDaysByYear: settings.groupDaysByYear,
+			hideDailyNoteH1: settings.hideDailyNoteH1,
 			richEditor: settings.richEditor,
 			hideEmptyDays: settings.hideEmptyDays,
 			filterRules: settings.filterRules,
@@ -1370,6 +1410,7 @@ export class JournalView extends ItemView implements DayHost, AnchorHost, Editor
 		this.plugin.filteredIndex.ensureCurrent();
 		this.syncWithIndex();
 		this.syncFilterButton();
+		this.syncDisplaySettings();
 		if (!this.ready) {
 			// A build is in flight against the old values - dropping the change
 			// here would leave the toolbar and the days disagreeing.

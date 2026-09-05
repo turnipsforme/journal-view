@@ -24,6 +24,7 @@ export type JournalFilterRule =
 			property: string;
 			value: JournalFilterValue;
 	  };
+export type OpenNoteAction = "button" | "hidden" | "heading";
 
 export interface JournalViewSettings {
 	/** Overrides the daily-note date format. Empty = inherit from the vault. */
@@ -58,6 +59,14 @@ export interface JournalViewSettings {
 	showTags: boolean;
 	/** Frontmatter property names shown above each existing note's body. */
 	displayProperties: string[];
+	/** Hide a leading level-one heading while leaving it in the daily note file. */
+	hideDailyNoteH1: boolean;
+	/** How readers open a daily note from its journal header. */
+	openNoteAction: OpenNoteAction;
+	/** Hide the rule between a daily header and its note body. */
+	hideHeaderSeparator: boolean;
+	/** Highlight today with its title colour instead of a shaded card. */
+	hideTodayBackground: boolean;
 	/** Chronological direction in which days are laid out. */
 	daySortDirection: DaySortDirection;
 }
@@ -81,6 +90,10 @@ export const DEFAULT_SETTINGS: JournalViewSettings = {
 	filterRules: [],
 	showTags: false,
 	displayProperties: [],
+	hideDailyNoteH1: false,
+	openNoteAction: "button",
+	hideHeaderSeparator: false,
+	hideTodayBackground: false,
 	daySortDirection: "ascending",
 };
 
@@ -91,6 +104,9 @@ type ToggleSettingKey =
 	| "focusTodayOnOpen"
 	| "openJournalOnStartup"
 	| "hideEmptyDays"
+	| "hideDailyNoteH1"
+	| "hideHeaderSeparator"
+	| "hideTodayBackground"
 	| "showMonthSeparators"
 	| "groupDaysByYear";
 
@@ -132,6 +148,11 @@ type JournalDropdownControl =
 			type: "dropdown";
 			key: "headerStyle";
 			options: Record<DailyHeaderStyle, string>;
+	  }
+	| {
+			type: "dropdown";
+			key: "openNoteAction";
+			options: Record<OpenNoteAction, string>;
 	  };
 
 interface JournalDropdownSetting extends JournalSettingBase {
@@ -231,6 +252,29 @@ export class JournalViewSettingTab extends PluginSettingTab {
 						},
 					},
 					{
+						name: "Open note control",
+						desc: "Keep the open-note button, remove it, or open the note by clicking its daily heading.",
+						control: {
+							type: "dropdown",
+							key: "openNoteAction",
+							options: {
+								button: "Show button (default)",
+								hidden: "Hide button",
+								heading: "Use clickable heading",
+							},
+						},
+					},
+					{
+						name: "Hide today's background",
+						desc: "Remove the shaded box around today and use your theme's bold or italic text colour for its date heading.",
+						control: { type: "toggle", key: "hideTodayBackground" },
+					},
+					{
+						name: "Hide header separator",
+						desc: "Remove the line between each daily heading and its note contents.",
+						control: { type: "toggle", key: "hideHeaderSeparator" },
+					},
+					{
 						name: "Group days by year",
 						desc: "Show a centered year heading when consecutive visible days cross a year boundary.",
 						control: { type: "toggle", key: "groupDaysByYear" },
@@ -251,6 +295,22 @@ export class JournalViewSettingTab extends PluginSettingTab {
 							"Days with no file are skipped entirely, so the journal jumps from one note to the next. " +
 							"Today is always shown. When off, every day appears, faded until you type in it.",
 						control: { type: "toggle", key: "hideEmptyDays" },
+					},
+					{
+						name: "Hide note H1 heading",
+						desc: "Hide a leading H1 from each entry in the journal while keeping it in the daily note file.",
+						control: { type: "toggle", key: "hideDailyNoteH1" },
+					},
+				],
+			},
+			{
+				type: "group",
+				heading: "Startup",
+				items: [
+					{
+						name: "Open journal on startup",
+						desc: "Open or reveal Journal View after Obsidian restores the workspace.",
+						control: { type: "toggle", key: "openJournalOnStartup" },
 					},
 				],
 			},
@@ -353,10 +413,19 @@ export class JournalViewSettingTab extends PluginSettingTab {
 					changed = true;
 				}
 				break;
+			case "openNoteAction":
+				if (value === "button" || value === "hidden" || value === "heading") {
+					this.plugin.settings[key] = value;
+					changed = true;
+				}
+				break;
 			case "richEditor":
 			case "focusTodayOnOpen":
 			case "openJournalOnStartup":
 			case "hideEmptyDays":
+			case "hideDailyNoteH1":
+			case "hideHeaderSeparator":
+			case "hideTodayBackground":
 			case "showMonthSeparators":
 			case "groupDaysByYear":
 				if (typeof value === "boolean") {

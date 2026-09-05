@@ -14,7 +14,7 @@ import {
 	clampLoadedDays,
 	clampSaveDelay,
 } from "./settings";
-import type { DailyHeaderStyle, DaySortDirection } from "./settings";
+import type { DailyHeaderStyle, DaySortDirection, OpenNoteAction } from "./settings";
 import { JournalView, VIEW_TYPE_JOURNAL } from "./view";
 
 type EntryDirection = -1 | 0 | 1;
@@ -306,7 +306,7 @@ export default class JournalViewPlugin extends Plugin {
 			folder: stringSetting(saved.folder, DEFAULT_SETTINGS.folder),
 			templatePath: stringSetting(saved.templatePath, DEFAULT_SETTINGS.templatePath),
 			headerFormat: headerFormatSetting(saved.headerFormat, typeof saved.showMonthSeparators === "boolean"),
-			headerStyle: headerStyleSetting(saved.headerStyle),
+			headerStyle: headerStyleSetting(saved.headerStyle, saved.dayHeadingStyle),
 			showMonthSeparators: booleanSetting(
 				saved.showMonthSeparators,
 				DEFAULT_SETTINGS.showMonthSeparators,
@@ -327,6 +327,13 @@ export default class JournalViewPlugin extends Plugin {
 			filterRules: filterRulesSetting(saved.filterRules),
 			showTags: booleanSetting(saved.showTags, DEFAULT_SETTINGS.showTags),
 			displayProperties: propertyNamesSetting(saved.displayProperties),
+			hideDailyNoteH1: booleanSetting(saved.hideDailyNoteH1, DEFAULT_SETTINGS.hideDailyNoteH1),
+			hideTodayBackground: booleanSetting(saved.hideTodayBackground, DEFAULT_SETTINGS.hideTodayBackground),
+			openNoteAction: openNoteActionSetting(saved.openNoteAction),
+			hideHeaderSeparator: booleanSetting(
+				saved.hideHeaderSeparator,
+				DEFAULT_SETTINGS.hideHeaderSeparator,
+			),
 			daySortDirection: daySortDirectionSetting(saved.daySortDirection),
 		};
 	}
@@ -357,8 +364,10 @@ function headerFormatSetting(value: unknown, hasGroupingSetting: boolean): strin
 	return format;
 }
 
-function headerStyleSetting(value: unknown): DailyHeaderStyle {
-	return value === "h1" || value === "hidden" ? value : DEFAULT_SETTINGS.headerStyle;
+function headerStyleSetting(value: unknown, legacyValue?: unknown): DailyHeaderStyle {
+	if (value === "subtle" || value === "h1" || value === "hidden") return value;
+	// Earlier fork releases used a separate setting for the same date typography.
+	return legacyValue === "h1" ? "h1" : DEFAULT_SETTINGS.headerStyle;
 }
 
 function saveDelaySetting(value: unknown): number {
@@ -392,4 +401,8 @@ function propertyNamesSetting(value: unknown): string[] {
 
 function daySortDirectionSetting(value: unknown): DaySortDirection {
 	return value === "descending" ? "descending" : DEFAULT_SETTINGS.daySortDirection;
+}
+
+function openNoteActionSetting(value: unknown): OpenNoteAction {
+	return value === "hidden" || value === "heading" ? value : DEFAULT_SETTINGS.openNoteAction;
 }
