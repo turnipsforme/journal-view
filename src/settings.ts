@@ -48,6 +48,8 @@ export interface JournalViewSettings {
 	openNoteAction: OpenNoteAction;
 	/** Hide the rule between a daily header and its note body. */
 	hideHeaderSeparator: boolean;
+	/** Highlight today with its title colour instead of a shaded card. */
+	hideTodayBackground: boolean;
 	/** Chronological direction in which days are laid out. */
 	daySortDirection: DaySortDirection;
 }
@@ -71,6 +73,7 @@ export const DEFAULT_SETTINGS: JournalViewSettings = {
 	dayHeadingStyle: "default",
 	openNoteAction: "button",
 	hideHeaderSeparator: false,
+	hideTodayBackground: false,
 	daySortDirection: "ascending",
 };
 
@@ -83,6 +86,7 @@ type ToggleSettingKey =
 	| "hideEmptyDays"
 	| "hideDailyNoteH1"
 	| "hideHeaderSeparator"
+	| "hideTodayBackground"
 	| "showMonthSeparators"
 	| "groupDaysByYear";
 
@@ -237,6 +241,11 @@ export class JournalViewSettingTab extends PluginSettingTab {
 						},
 					},
 					{
+						name: "Hide today's background",
+						desc: "Remove the shaded box around today and use your theme's bold or italic text colour for its date heading.",
+						control: { type: "toggle", key: "hideTodayBackground" },
+					},
+					{
 						name: "Hide header separator",
 						desc: "Remove the line between each daily heading and its note contents.",
 						control: { type: "toggle", key: "hideHeaderSeparator" },
@@ -381,6 +390,7 @@ export class JournalViewSettingTab extends PluginSettingTab {
 			case "hideEmptyDays":
 			case "hideDailyNoteH1":
 			case "hideHeaderSeparator":
+			case "hideTodayBackground":
 			case "showMonthSeparators":
 			case "groupDaysByYear":
 				if (typeof value === "boolean") {

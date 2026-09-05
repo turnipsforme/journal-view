@@ -13,6 +13,7 @@ import { createMoment } from "./moment";
 import type { Moment } from "./moment";
 import { DAY_KEY_FORMAT } from "./noteIndex";
 import { listenForReaderScrollIntent } from "./readerInput";
+import { completedTasksPlugin } from "./completedTasks";
 
 export const VIEW_TYPE_JOURNAL = "journal-view";
 
@@ -90,6 +91,8 @@ export class JournalView extends ItemView implements DayHost, AnchorHost, Editor
 	private endPendingFocusCenter: (() => void) | null = null;
 	/** Delayed editor focus used only by the initial open on today. */
 	private initialFocusTimer = 0;
+	private lastTaskSort = Date.now();
+	private lastEditedDay: DaySection | null = null;
 	/** Cursor placement requested while the pane still had no measurable height. */
 	private focusOnFirstResizeAtEnd: boolean | null = null;
 	/** True while a pointer is held down in the scroller (scrollbar, selection). */
@@ -138,6 +141,9 @@ export class JournalView extends ItemView implements DayHost, AnchorHost, Editor
 			this.showFind();
 			return false;
 		});
+		this.scope.register(["Mod"], "a", () => {
+			if (this.sections.some((section) => section.expandSelection())) return false;
+		});
 		this.initialTarget = plugin.consumeInitialTarget(leaf);
 		// Opening a note (from a day header, or a link inside a day) must not
 		// replace the journal itself.
@@ -183,6 +189,14 @@ export class JournalView extends ItemView implements DayHost, AnchorHost, Editor
 		this.registerDomEvent(window, "pointerup", () => (this.pointerHeld = false), { passive: true });
 		this.registerDomEvent(this.containerEl, "keydown", (event) => this.onKeydown(event), { capture: true });
 		this.registerVaultEvents();
+		this.registerInterval(window.setInterval(() => {
+			if (this.app.workspace.getActiveViewOfType(JournalView) !== this) return;
+			const interval = completedTasksPlugin(this.app)?.settings.intervalSeconds ?? 0;
+			if (!Number.isFinite(interval) || interval <= 0 || Date.now() - this.lastTaskSort < interval * 1000) return;
+			this.lastTaskSort = Date.now();
+			const day = this.sections.find((section) => section.hasFocus) ?? this.lastEditedDay;
+			day?.sortCompletedTasks();
+		}, 500));
 
 		const initialTarget = this.initialTarget;
 		this.initialTarget = undefined;
@@ -703,6 +717,14 @@ export class JournalView extends ItemView implements DayHost, AnchorHost, Editor
 	}
 
 	private onKeydown(event: KeyboardEvent): void {
+		if (event.defaultPrevented) return;
+		if (event.key.toLowerCase() === "a" && (event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey) {
+			if (this.sections.some((section) => section.expandSelection())) {
+				event.preventDefault();
+				event.stopPropagation();
+			}
+			return;
+		}
 		if (
 			event.key.toLowerCase() !== "f" ||
 			(!event.metaKey && !event.ctrlKey) ||
@@ -1208,7 +1230,8 @@ export class JournalView extends ItemView implements DayHost, AnchorHost, Editor
 		this.syncDateSeparators();
 	}
 
-	onDayContentChanged(_day: DaySection): void {
+	onDayContentChanged(day: DaySection): void {
+		if (day.hasFocus) this.lastEditedDay = day;
 		this.find?.sectionsChanged();
 	}
 
@@ -1264,6 +1287,7 @@ export class JournalView extends ItemView implements DayHost, AnchorHost, Editor
 	}
 
 	private syncDisplaySettings(): void {
+		this.containerEl.toggleClass("journal-today-background-hidden", this.plugin.settings.hideTodayBackground);
 		this.containerEl.toggleClass("journal-heading-style-h1", this.plugin.settings.dayHeadingStyle === "h1");
 		this.containerEl.toggleClass(
 			"journal-open-note-button-hidden",

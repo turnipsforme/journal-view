@@ -34,6 +34,7 @@ vault handles daily notes.
 | Day order | Oldest to newest | Reverses the complete timeline when set to newest to oldest |
 | Daily header format | `dddd, D MMMM` | Controls how each daily header displays its date |
 | Daily heading style | Journal View default | Can use the current theme's H1 typography for daily headings |
+| Hide today's background | Off | Replaces today's shaded box with a date heading in the theme's emphasis colour |
 | Open note control | Show button | Can hide the open-note button or replace it with a clickable daily heading |
 | Hide header separator | Off | Removes the line between each daily heading and its note contents |
 | Group days by year | On | Marks year boundaries between consecutive visible daily entries |
@@ -45,6 +46,21 @@ vault handles daily notes.
 | Rich editor | On | Uses Obsidian's Markdown editor; turn it off to use the plain-text fallback |
 | Autosave delay | 2000 ms | Sets how long Journal View waits after typing before saving |
 | Days kept loaded | 60 | Sets the target number of days kept in the timeline; dropped days reload when you scroll back to them |
+
+## Editing and completed tasks
+
+Press **Cmd+A** on Mac or **Ctrl+A** on Windows/Linux inside a daily entry to select the current
+line without its list or task marker. Press again for the current heading's contents, then once
+more for the whole note body without its leading H1. Moving the cursor or editing starts over.
+
+When **Completed Tasks** is enabled, Journal View uses its sorter for the active journal entry.
+Its interval, task statuses, priority order, blacklist words, and `completedTasks: false` setting
+all apply. Setting its interval to zero disables automatic sorting. Its **Reorder on tab change**
+option also sorts an edited entry when you leave that entry. Completed Tasks itself is unchanged.
+
+Today's card has extra space around its title and sides, with smaller gaps before the note text
+and after backlinks. **Hide today's background** keeps that spacing and uses the theme's bold or
+italic colour for today's date, including Things' pink emphasis colour.
 
 ## Date commands
 
