@@ -25,7 +25,7 @@ import { SmartSelection } from "./smartSelection";
 import { completedTasksPlugin, reorderCompletedTasks } from "./completedTasks";
 
 /**
- * Frames a cursor placed at the end of a day is kept on screen for, long
+ * Frames a cursor placed by navigation is kept on screen for, long
  * enough to outlast the centring and the rebuild that can follow a go-to.
  */
 const REVEAL_FRAMES = 10;
@@ -347,6 +347,8 @@ export class DaySection {
 	private focused = false;
 	/** Invalidates focus-settle work when focus leaves or the day is destroyed. */
 	private focusSettleToken = 0;
+	/** Explicit command placement, including while an empty day's template loads. */
+	private navigationAtEnd: boolean | undefined;
 	private readonly queue = new SaveQueue((value) => this.writeValue(value));
 	private findState: {
 		query: string;
@@ -480,6 +482,7 @@ export class DaySection {
 
 	/** Puts the cursor where the day was clicked, mounting an editor if needed. */
 	private focusAt(event: MouseEvent): void {
+		this.navigationAtEnd = undefined;
 		this.mountEditor();
 		const editor = this.editor;
 		if (!editor) return;
@@ -515,7 +518,8 @@ export class DaySection {
 		this.pendingTemplate = body;
 		this.pendingTemplatePrefix = projected.hiddenPrefix;
 		this.editor.setValue(body);
-		this.editor.placeCursorAtEnd?.();
+		if (this.navigationAtEnd === undefined) this.editor.placeCursorAtEnd?.();
+		else this.placeNavigationCursor(this.navigationAtEnd);
 		this.releaseHeight();
 		this.updateBlankState();
 	}
@@ -1801,6 +1805,7 @@ export class DaySection {
 	private async reportFocusSettled(token: number): Promise<void> {
 		await this.offerTemplate();
 		for (let frame = 0; frame < REVEAL_FRAMES + 2; frame++) {
+			if (this.destroyed || token !== this.focusSettleToken || !this.hasFocus) return;
 			await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
 		}
 		if (this.destroyed || token !== this.focusSettleToken || !this.hasFocus) return;
@@ -1810,6 +1815,7 @@ export class DaySection {
 	/** Blurring an editor is not leaving the day, but it is a good time to save. */
 	private onEditorBlur(): void {
 		this.focusSettleToken++;
+		this.navigationAtEnd = undefined;
 		this.focused = false;
 		this.el.removeClass("journal-day-focused");
 		// Leaving a day the reader only looked at costs them nothing.
@@ -1855,30 +1861,36 @@ export class DaySection {
 	}
 
 	/**
-	 * Puts the reader in the day's editor. `atEnd` puts the cursor past
-	 * everything the day already holds, which is where writing carries on -
-	 * asked for by the two ways of arriving at today, opening the journal on it
-	 * and coming home to it. Every other way in leaves the cursor where focus
-	 * put it: a day reached by date is one to read as much as to write in, and
-	 * find needs the cursor on the match it just revealed.
+	 * Puts the reader in the day's editor. An explicit `atEnd` selects the
+	 * bottom (true) or top (false). Omitting it keeps the existing cursor,
+	 * including a search match that was just revealed.
 	 * Returns false when the guarded editor mount failed.
 	 */
-	focusEditor(atEnd = false): boolean {
+	focusEditor(atEnd?: boolean): boolean {
 		this.mountEditor();
 		if (!this.editor) return false;
+		this.navigationAtEnd = atEnd;
+		const focusToken = this.focusSettleToken;
 		this.editor.focus();
-		if (atEnd) {
-			this.editor.placeCursorAtEnd?.(true);
-			this.keepCursorInView();
-		}
+		if (atEnd !== undefined) this.placeNavigationCursor(atEnd);
 		// `focus()` emits nothing when this editor already owns focus. Navigation
 		// still needs a fresh measurement after it has returned from far offscreen.
-		this.scheduleFocusSettled();
+		if (focusToken === this.focusSettleToken) this.scheduleFocusSettled();
 		return true;
 	}
 
+	private placeNavigationCursor(atEnd: boolean): void {
+		if (!this.editor) return;
+		if (atEnd) this.editor.placeCursorAtEnd?.(true);
+		else {
+			this.editor.setSelectionRange({ anchor: 0, head: 0 });
+			this.editor.revealCursor?.();
+		}
+		this.keepCursorInView();
+	}
+
 	/**
-	 * Holds a cursor placed at the end on screen over the frames that follow.
+	 * Holds the requested cursor position on screen over the frames that follow.
 	 *
 	 * Arriving at a day is the view's own scroll: it centres the day, releases
 	 * the height its preview was held at, and on a go-to may have rebuilt the
@@ -1921,7 +1933,10 @@ export class DaySection {
 		this.revealFrame = 0;
 		this.endReveal?.();
 		this.endReveal = null;
-		if (withdraw) this.editor?.cancelReveal?.();
+		if (withdraw) {
+			this.navigationAtEnd = undefined;
+			this.editor?.cancelReveal?.();
+		}
 	}
 
 	/** Applies a change that happened outside the journal (sync, another tab). */

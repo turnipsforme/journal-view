@@ -44,6 +44,7 @@ Some Customization is only visible in the customization menu accessible from the
 | Group days by year | On | Marks year boundaries between consecutive visible daily entries |
 | Group days by month | Off | Groups daily entries beneath compact month and year headings |
 | Focus today on open | On | Opens the journal at today's note and places the cursor there |
+| Go to note position | Bottom | Sets the cursor and scroll destination to Top or Bottom for the day commands and toolbar Today button |
 | Open journal on startup | Off | Opens or reveals Journal View after Obsidian restores the workspace |
 | Only show days that have a note | On | Skips empty days while always keeping today visible; turn it off to show every day |
 | Hide note H1 heading | Off | Hides a leading H1 in the journal while keeping it in the daily note file |
@@ -98,6 +99,10 @@ the two plugins to open content at startup so they do not compete for the active
 Yesterday and tomorrow are shown while focused even when the note-only toggle or a metadata filter
 would normally hide them. All three commands scroll when the target is nearby and snap when it is
 more than two view heights away.
+
+Choose **Top** or **Bottom** in **Settings → Journal View → Go to note position** to control where
+these commands place the cursor and scroll within the note. **Bottom** keeps the previous behaviour.
+This also applies to the toolbar's Today button, including when a note starts with a template.
 
 ## Privacy
 
