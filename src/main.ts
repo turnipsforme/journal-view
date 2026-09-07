@@ -21,7 +21,7 @@ type EntryDirection = -1 | 0 | 1;
 
 interface InitialJournalTarget {
 	date: Moment;
-	focusAtEnd: boolean;
+	focusAtEnd: boolean | undefined;
 	revealThroughFilters: boolean;
 }
 
@@ -187,7 +187,7 @@ export default class JournalViewPlugin extends Plugin {
 	async activateView(
 		forceNewTab = false,
 		date?: Moment,
-		focusAtEnd = false,
+		focusAtEnd?: boolean,
 		revealThroughFilters = false,
 	): Promise<void> {
 		const { workspace } = this.app;
@@ -217,8 +217,8 @@ export default class JournalViewPlugin extends Plugin {
 		}
 		await workspace.revealLeaf(leaf);
 		if (date && !created && leaf.view instanceof JournalView) {
-			if (revealThroughFilters) leaf.view.goToCommandDate(date, true);
-			else leaf.view.goToDate(date, true);
+			if (revealThroughFilters) leaf.view.goToCommandDate(date, true, focusAtEnd);
+			else leaf.view.goToDate(date, true, focusAtEnd);
 		}
 	}
 
@@ -231,20 +231,21 @@ export default class JournalViewPlugin extends Plugin {
 
 	private async openJournalEntry(direction: EntryDirection): Promise<void> {
 		const date = this.entryDate(direction);
+		const atEnd = this.settings.goToNotePosition === "bottom";
 		const { workspace } = this.app;
 		const existing = workspace.getLeavesOfType(VIEW_TYPE_JOURNAL);
 		const active = workspace.getActiveViewOfType(JournalView);
 		const leaf = active?.leaf ?? existing[0];
 		if (!leaf) {
-			await this.activateView(false, date, true, direction !== 0);
+			await this.activateView(false, date, atEnd, direction !== 0);
 			return;
 		}
 
 		await workspace.revealLeaf(leaf);
 		const view = leaf.view;
 		if (!(view instanceof JournalView)) return;
-		if (direction === 0) view.goToToday(true);
-		else view.goToCommandDate(date, true);
+		if (direction === 0) view.goToToday(true, atEnd);
+		else view.goToCommandDate(date, true, atEnd);
 	}
 
 	private entryDate(direction: EntryDirection): Moment {
@@ -319,6 +320,7 @@ export default class JournalViewPlugin extends Plugin {
 			maxLoadedDays: loadedDaysSetting(saved.maxLoadedDays),
 			richEditor: booleanSetting(saved.richEditor, DEFAULT_SETTINGS.richEditor),
 			focusTodayOnOpen: booleanSetting(saved.focusTodayOnOpen, DEFAULT_SETTINGS.focusTodayOnOpen),
+			goToNotePosition: saved.goToNotePosition === "top" ? "top" : DEFAULT_SETTINGS.goToNotePosition,
 			openJournalOnStartup: booleanSetting(
 				saved.openJournalOnStartup,
 				DEFAULT_SETTINGS.openJournalOnStartup,

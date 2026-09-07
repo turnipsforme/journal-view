@@ -25,6 +25,7 @@ export type JournalFilterRule =
 			value: JournalFilterValue;
 	  };
 export type OpenNoteAction = "button" | "hidden" | "heading";
+export type GoToNotePosition = "top" | "bottom";
 
 export interface JournalViewSettings {
 	/** Overrides the daily-note date format. Empty = inherit from the vault. */
@@ -49,6 +50,8 @@ export interface JournalViewSettings {
 	richEditor: boolean;
 	/** Put the cursor in today's note when the view opens. */
 	focusTodayOnOpen: boolean;
+	/** Cursor and scroll destination for the go-to-day commands. */
+	goToNotePosition: GoToNotePosition;
 	/** Open or reveal the journal after Obsidian restores the workspace. */
 	openJournalOnStartup: boolean;
 	/** Show only days that have a note (today always shows). */
@@ -85,6 +88,7 @@ export const DEFAULT_SETTINGS: JournalViewSettings = {
 	maxLoadedDays: 60,
 	richEditor: true,
 	focusTodayOnOpen: true,
+	goToNotePosition: "bottom",
 	openJournalOnStartup: false,
 	hideEmptyDays: true,
 	filterRules: [],
@@ -139,6 +143,11 @@ interface JournalSliderSetting extends JournalSettingBase {
 }
 
 type JournalDropdownControl =
+	| {
+			type: "dropdown";
+			key: "goToNotePosition";
+			options: Record<GoToNotePosition, string>;
+	  }
 	| {
 			type: "dropdown";
 			key: "daySortDirection";
@@ -290,6 +299,15 @@ export class JournalViewSettingTab extends PluginSettingTab {
 						control: { type: "toggle", key: "focusTodayOnOpen" },
 					},
 					{
+						name: "Go to note position",
+						desc: "Choose where the cursor lands and the view scrolls when using Go to today, yesterday, or tomorrow, including the toolbar's Today button.",
+						control: {
+							type: "dropdown",
+							key: "goToNotePosition",
+							options: { top: "Top", bottom: "Bottom" },
+						},
+					},
+					{
 						name: "Only show days that have a note",
 						desc:
 							"Days with no file are skipped entirely, so the journal jumps from one note to the next. " +
@@ -300,17 +318,6 @@ export class JournalViewSettingTab extends PluginSettingTab {
 						name: "Hide note H1 heading",
 						desc: "Hide a leading H1 from each entry in the journal while keeping it in the daily note file.",
 						control: { type: "toggle", key: "hideDailyNoteH1" },
-					},
-				],
-			},
-			{
-				type: "group",
-				heading: "Startup",
-				items: [
-					{
-						name: "Open journal on startup",
-						desc: "Open or reveal Journal View after Obsidian restores the workspace.",
-						control: { type: "toggle", key: "openJournalOnStartup" },
 					},
 				],
 			},
@@ -407,6 +414,12 @@ export class JournalViewSettingTab extends PluginSettingTab {
 					changed = true;
 				}
 				break;
+			case "goToNotePosition":
+				if (value === "top" || value === "bottom") {
+					this.plugin.settings[key] = value;
+					changed = true;
+				}
+				break;
 			case "headerStyle":
 				if (value === "subtle" || value === "h1" || value === "hidden") {
 					this.plugin.settings[key] = value;
@@ -434,7 +447,7 @@ export class JournalViewSettingTab extends PluginSettingTab {
 				}
 				break;
 		}
-		if (changed) await this.plugin.saveSettings();
+		if (changed) await this.plugin.saveSettings(key !== "goToNotePosition");
 	}
 
 	display(): void {

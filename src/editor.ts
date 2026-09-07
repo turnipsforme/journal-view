@@ -545,7 +545,8 @@ class RichEditor implements JournalEditor {
 
 	placeCursorAtEnd(reveal = false): void {
 		try {
-			this.instance?.editor?.cm?.dispatch?.({ selection: { anchor: this.getValue().length } });
+			const cm = this.instance?.editor?.cm;
+			cm?.dispatch?.({ selection: { anchor: cm.state?.doc.length ?? this.getValue().length } });
 			// A cursor the reader is meant to carry on typing at is worth the
 			// scroll; one placed under them - a template offer - is not.
 			if (reveal) this.revealCursor();
@@ -727,11 +728,15 @@ class PlainEditor implements JournalEditor {
 
 	/**
 	 * The textarea grows to its full content and never scrolls itself, so its
-	 * bottom edge is where a cursor at the end sits. Anywhere else in the text
-	 * has no box of its own to bring on screen, and is left alone.
+	 * edges locate a cursor at the start or end. Positions in the middle have
+	 * no box of their own to bring on screen, and are left alone.
 	 */
 	revealCursor(): void {
 		const end = this.textarea.value.length;
+		if (this.textarea.selectionStart === 0 && this.textarea.selectionEnd === 0) {
+			this.textarea.scrollIntoView({ block: "start" });
+			return;
+		}
 		if (this.textarea.selectionStart !== end || this.textarea.selectionEnd !== end) return;
 		this.textarea.scrollIntoView({ block: "end" });
 	}
