@@ -25,7 +25,7 @@ export type JournalFilterRule =
 			value: JournalFilterValue;
 	  };
 export type OpenNoteAction = "button" | "hidden" | "heading";
-export type GoToNotePosition = "top" | "bottom";
+export type GoToNotePosition = "top" | "bottom" | "auto";
 
 export interface JournalViewSettings {
 	/** Overrides the daily-note date format. Empty = inherit from the vault. */
@@ -300,11 +300,11 @@ export class JournalViewSettingTab extends PluginSettingTab {
 					},
 					{
 						name: "Go to note position",
-						desc: "Choose where the cursor lands and the view scrolls when using Go to today, yesterday, or tomorrow, including the toolbar's Today button.",
+						desc: "Choose where Go to today, yesterday, tomorrow, and the toolbar's Today button land. Auto goes to the top for 20 or more lines in the visible note body, otherwise the bottom. Counts blank lines, but not visual line wrapping.",
 						control: {
 							type: "dropdown",
 							key: "goToNotePosition",
-							options: { top: "Top", bottom: "Bottom" },
+							options: { top: "Top", bottom: "Bottom", auto: "Auto (20+ lines: top)" },
 						},
 					},
 					{
@@ -415,7 +415,7 @@ export class JournalViewSettingTab extends PluginSettingTab {
 				}
 				break;
 			case "goToNotePosition":
-				if (value === "top" || value === "bottom") {
+				if (value === "top" || value === "bottom" || value === "auto") {
 					this.plugin.settings[key] = value;
 					changed = true;
 				}

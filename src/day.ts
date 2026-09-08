@@ -23,6 +23,8 @@ import { listenForReaderScrollIntent } from "./readerInput";
 import { mergeProjectedNoteBody, projectNoteBody } from "./noteProjection";
 import { SmartSelection } from "./smartSelection";
 import { completedTasksPlugin, reorderCompletedTasks } from "./completedTasks";
+import { autoNavigatesToEnd } from "./navigation";
+import type { NavigationPlacement } from "./navigation";
 
 /**
  * Frames a cursor placed by navigation is kept on screen for, long
@@ -348,7 +350,7 @@ export class DaySection {
 	/** Invalidates focus-settle work when focus leaves or the day is destroyed. */
 	private focusSettleToken = 0;
 	/** Explicit command placement, including while an empty day's template loads. */
-	private navigationAtEnd: boolean | undefined;
+	private navigationAtEnd: NavigationPlacement | undefined;
 	private readonly queue = new SaveQueue((value) => this.writeValue(value));
 	private findState: {
 		query: string;
@@ -1862,11 +1864,11 @@ export class DaySection {
 
 	/**
 	 * Puts the reader in the day's editor. An explicit `atEnd` selects the
-	 * bottom (true) or top (false). Omitting it keeps the existing cursor,
-	 * including a search match that was just revealed.
+	 * bottom (true), top (false), or chooses by body length (auto). Omitting it
+	 * keeps the existing cursor, including a search match that was just revealed.
 	 * Returns false when the guarded editor mount failed.
 	 */
-	focusEditor(atEnd?: boolean): boolean {
+	focusEditor(atEnd?: NavigationPlacement): boolean {
 		this.mountEditor();
 		if (!this.editor) return false;
 		this.navigationAtEnd = atEnd;
@@ -1879,8 +1881,9 @@ export class DaySection {
 		return true;
 	}
 
-	private placeNavigationCursor(atEnd: boolean): void {
+	private placeNavigationCursor(placement: NavigationPlacement): void {
 		if (!this.editor) return;
+		const atEnd = placement === "auto" ? autoNavigatesToEnd(this.editor.getValue()) : placement;
 		if (atEnd) this.editor.placeCursorAtEnd?.(true);
 		else {
 			this.editor.setSelectionRange({ anchor: 0, head: 0 });
