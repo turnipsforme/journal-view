@@ -5,6 +5,8 @@ import { FilteredDailyNoteIndex, filterRulesSetting } from "./filter";
 import { createMoment } from "./moment";
 import type { Moment } from "./moment";
 import { DAY_KEY_FORMAT, DailyNoteIndex } from "./noteIndex";
+import { navigationPlacement } from "./navigation";
+import type { NavigationPlacement } from "./navigation";
 import {
 	DEFAULT_SETTINGS,
 	JournalViewSettingTab,
@@ -21,7 +23,7 @@ type EntryDirection = -1 | 0 | 1;
 
 interface InitialJournalTarget {
 	date: Moment;
-	focusAtEnd: boolean | undefined;
+	focusAtEnd: NavigationPlacement | undefined;
 	revealThroughFilters: boolean;
 }
 
@@ -187,7 +189,7 @@ export default class JournalViewPlugin extends Plugin {
 	async activateView(
 		forceNewTab = false,
 		date?: Moment,
-		focusAtEnd?: boolean,
+		focusAtEnd?: NavigationPlacement,
 		revealThroughFilters = false,
 	): Promise<void> {
 		const { workspace } = this.app;
@@ -231,7 +233,7 @@ export default class JournalViewPlugin extends Plugin {
 
 	private async openJournalEntry(direction: EntryDirection): Promise<void> {
 		const date = this.entryDate(direction);
-		const atEnd = this.settings.goToNotePosition === "bottom";
+		const atEnd = navigationPlacement(this.settings.goToNotePosition);
 		const { workspace } = this.app;
 		const existing = workspace.getLeavesOfType(VIEW_TYPE_JOURNAL);
 		const active = workspace.getActiveViewOfType(JournalView);
@@ -320,7 +322,8 @@ export default class JournalViewPlugin extends Plugin {
 			maxLoadedDays: loadedDaysSetting(saved.maxLoadedDays),
 			richEditor: booleanSetting(saved.richEditor, DEFAULT_SETTINGS.richEditor),
 			focusTodayOnOpen: booleanSetting(saved.focusTodayOnOpen, DEFAULT_SETTINGS.focusTodayOnOpen),
-			goToNotePosition: saved.goToNotePosition === "top" ? "top" : DEFAULT_SETTINGS.goToNotePosition,
+			goToNotePosition: saved.goToNotePosition === "top" || saved.goToNotePosition === "auto"
+				? saved.goToNotePosition : DEFAULT_SETTINGS.goToNotePosition,
 			openJournalOnStartup: booleanSetting(
 				saved.openJournalOnStartup,
 				DEFAULT_SETTINGS.openJournalOnStartup,
