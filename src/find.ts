@@ -2,7 +2,7 @@ import { App, getFrontMatterInfo, setIcon, setTooltip } from "obsidian";
 import type JournalViewPlugin from "./main";
 import type { DaySection } from "./day";
 import { isOffsetReachable } from "./dayWalk";
-import { findLiteralRanges } from "./findText";
+import { containsLiteral, findLiteralRanges } from "./findText";
 import type { FindRange } from "./findText";
 import { createMoment } from "./moment";
 import type { Moment } from "./moment";
@@ -125,6 +125,7 @@ export class JournalFind {
 	}
 
 	focusInput(select = false): void {
+		if (this.destroyed || !this.open) return;
 		this.input.focus({ preventScroll: true });
 		if (select) this.input.select();
 	}
@@ -260,11 +261,12 @@ export class JournalFind {
 					console.warn(`Journal View: could not search ${file.path}`, error);
 					continue;
 				}
+				if (token !== this.scanToken || !this.open || query !== this.input.value) return;
 				const body = projectNoteBody(
 					content.slice(getFrontMatterInfo(content).contentStart),
 					this.host.plugin.settings.hideDailyNoteH1,
 				).editorBody;
-				if (findLiteralRanges(body, query, this.caseSensitive).length) {
+				if (containsLiteral(body, query, this.caseSensitive)) {
 					await this.host.loadFindDate(date);
 					if (token !== this.scanToken || !this.open || query !== this.input.value) return;
 					this.refresh(false, key, direction);
@@ -343,10 +345,13 @@ export class JournalFind {
 
 	destroy(): void {
 		this.destroyed = true;
+		this.open = false;
 		this.cancelScan();
 		if (this.refreshFrame) window.cancelAnimationFrame(this.refreshFrame);
 		this.refreshFrame = 0;
 		this.clearSections();
+		this.matches = [];
+		this.selected = null;
 		this.el.remove();
 	}
 }

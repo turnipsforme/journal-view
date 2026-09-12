@@ -70,6 +70,15 @@ journal** searches only the notes currently included.
 
 ## Editing and completed tasks
 
+If a note changes elsewhere while you are editing it, Journal View saves your text
+to a separate conflict copy and continues saving further text edits there. The
+original note stays untouched. Temporary save failures retry automatically, even
+after the entry leaves the timeline. Failed editor reads are held for another
+attempt instead of being saved as empty notes.
+
+Retries keep pending edits in memory while Obsidian is running. They cannot protect
+unsaved work if the app or device shuts down before a write succeeds.
+
 Press **Cmd+A** on Mac or **Ctrl+A** on Windows/Linux inside a daily entry to select the current
 line without its list or task marker. Press again for the current heading's contents, then once
 more for the whole note body without its leading H1. Moving the cursor or editing starts over.

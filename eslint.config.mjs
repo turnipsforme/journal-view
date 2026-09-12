@@ -6,6 +6,7 @@ export default defineConfig(
 	globalIgnores([
 		"node_modules",
 		"test-vault",
+		"tests/*.cjs",
 		"esbuild.config.mjs",
 		"main.js",
 		"package-lock.json",

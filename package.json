@@ -4,6 +4,7 @@
 	"description": "Journal View - a continuous, scrollable journal view of your daily notes for Obsidian.",
 	"main": "main.js",
 	"scripts": {
+		"test": "node --test tests/*.cjs",
 		"dev": "node esbuild.config.mjs",
 		"build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
 		"lint": "eslint .",

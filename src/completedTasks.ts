@@ -18,7 +18,8 @@ export function completedTasksPlugin(app: App): CompletedTasksPlugin | null {
 export function reorderCompletedTasks(app: App, file: TFile, editor: JournalEditor): boolean {
 	const plugin = completedTasksPlugin(app);
 	if (!plugin) return false;
-	const before = editor.getValue();
+	const before = editor.tryGetValue();
+	if (before === null) return false;
 	let value = before;
 	const initialCursor = editor.getSelectionRange();
 	if (!initialCursor) return false;
@@ -46,7 +47,7 @@ export function reorderCompletedTasks(app: App, file: TFile, editor: JournalEdit
 		// Work on a snapshot first so a failing integration cannot leave a partial edit.
 		plugin.reorderView({ file, editor: adapter });
 		if (value !== before) {
-			editor.setValue(value, true);
+			if (!editor.setValue(value, true)) return false;
 			editor.setSelectionRange(cursor);
 		}
 		return true;

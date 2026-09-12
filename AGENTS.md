@@ -28,9 +28,10 @@ editable timeline. See [README.md](README.md) for behavior and installation.
 
 ## Testing
 
-There are no automated tests: nearly everything here is an interaction against
-Obsidian's own runtime. Verify changes in the throwaway vault instead of a real
-one, and say what you actually exercised rather than what should follow.
+Run `npm test` for deterministic save, conflict, lifecycle, and index regression
+checks. These exercise actual TypeScript methods with mocked vault APIs and timers;
+they do not emulate Obsidian's editor or DOM. Also verify interaction changes in the
+throwaway vault instead of a real one, and say what you actually exercised.
 
 ```bash
 npm run test-vault   # builds/repairs test-vault/, gitignored, plugin symlinked in

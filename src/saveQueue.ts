@@ -5,12 +5,14 @@
  * no longer tied to whatever produced it. A day's editor can be torn down the
  * instant after submitting, mid-write, and the queued text still reaches disk.
  *
- * `write` reports success; a failed write keeps its value queued so the next
- * submit retries it rather than silently dropping the edit.
+ * `write` reports success; failed writes keep their newest value and retry with
+ * bounded backoff even after the editor is removed.
  */
 export class SaveQueue {
 	private pending: string | null = null;
 	private inFlight: Promise<void> | null = null;
+	private retryTimer = 0;
+	private retryDelay = 2000;
 
 	constructor(private write: (value: string) => Promise<boolean>) {}
 
@@ -18,18 +20,29 @@ export class SaveQueue {
 		return this.pending !== null || this.inFlight !== null;
 	}
 
-	/** Queues `value`; resolves once the queue has drained. */
+	/** Queues `value`; waits for this attempt. Failures stay pending for retry. */
 	submit(value: string): Promise<void> {
 		this.pending = value;
+		window.clearTimeout(this.retryTimer);
+		this.retryTimer = 0;
 		if (!this.inFlight) {
-			this.inFlight = this.run().finally(() => {
+			this.inFlight = Promise.resolve().then(() => this.run()).finally(() => {
 				this.inFlight = null;
+				if (this.pending !== null) {
+					// The timer owns the pending text even after its editor disappears.
+					// Back off during disk/sync failures without abandoning the edit.
+					this.retryTimer = window.setTimeout(() => {
+						this.retryTimer = 0;
+						if (this.pending !== null) void this.submit(this.pending);
+					}, this.retryDelay);
+					this.retryDelay = Math.min(this.retryDelay * 2, 60_000);
+				} else this.retryDelay = 2000;
 			});
 		}
 		return this.inFlight;
 	}
 
-	/** Resolves once nothing is queued or in flight. */
+	/** Waits for active writes; hasPending remains true during a failed-write retry. */
 	async settled(): Promise<void> {
 		while (this.inFlight) await this.inFlight;
 	}
@@ -39,7 +52,12 @@ export class SaveQueue {
 			const value = this.pending;
 			this.pending = null;
 
-			const ok = await this.write(value);
+			let ok = false;
+			try {
+				ok = await this.write(value);
+			} catch (error) {
+				console.error("Journal View: queued write failed", error);
+			}
 			if (!ok) {
 				// Hold the newest text for a later attempt, but stop looping so a
 				// permanent failure cannot spin.

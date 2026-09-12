@@ -115,6 +115,7 @@ export class JournalView extends ItemView implements DayHost, AnchorHost, Editor
 	/** False until the view has centred on today in a laid-out pane. */
 	private centered = false;
 	private ready = false;
+	private closed = false;
 	/** Offset of the day the current window was built around. */
 	private origin = 0;
 	/** A settings change that arrived while a build was in flight. */
@@ -219,6 +220,9 @@ export class JournalView extends ItemView implements DayHost, AnchorHost, Editor
 	}
 
 	async onClose(): Promise<void> {
+		this.closed = true;
+		this.ready = false;
+		this.epoch++;
 		this.commandNavigationToken++;
 		// Modals hold this view in their callbacks, so they have to go with it.
 		this.picker?.close();
@@ -246,6 +250,7 @@ export class JournalView extends ItemView implements DayHost, AnchorHost, Editor
 		window.clearTimeout(this.initialFocusTimer);
 		this.initialFocusTimer = 0;
 		this.focusOnFirstResizeAtEnd = null;
+		this.lastEditedDay = null;
 		this.commandTargetOffset = null;
 		window.clearTimeout(this.settleTimer);
 		this.settleTimer = 0;
@@ -267,6 +272,7 @@ export class JournalView extends ItemView implements DayHost, AnchorHost, Editor
 	 * rebuild happens under the reader, and taking their cursor would be theft.
 	 */
 	private async build(around?: Moment, focusToday = false, revealAround = false): Promise<void> {
+		if (this.closed) return;
 		this.ready = false;
 		this.centered = false;
 		const settingsSignature = this.rebuildSettingsSignature();
@@ -381,11 +387,14 @@ export class JournalView extends ItemView implements DayHost, AnchorHost, Editor
 
 	/** Rebuilds everything, e.g. after the daily-note format changed. */
 	async rebuild(around?: Moment, focusToday = false, revealAround = false): Promise<void> {
+		if (this.closed) return;
+		const epoch = ++this.epoch;
 		// Closed for business from here on: flushing is asynchronous, and a
 		// change arriving during it must queue rather than start a second
 		// rebuild alongside this one.
 		this.ready = false;
 		await this.flushAll();
+		if (this.closed || epoch !== this.epoch) return;
 		this.teardown();
 		await this.build(around, focusToday, revealAround);
 	}
@@ -457,14 +466,6 @@ export class JournalView extends ItemView implements DayHost, AnchorHost, Editor
 		return this.sections.find((section) => section.offset === offset);
 	}
 
-	private indexPaths(): void {
-		this.byPath.clear();
-		for (const section of this.sections) {
-			this.byPath.set(section.path, section);
-			if (section.file) this.byPath.set(section.file.path, section);
-		}
-	}
-
 	/* ------------------------------------------------------------- loading */
 
 	/**
@@ -508,7 +509,8 @@ export class JournalView extends ItemView implements DayHost, AnchorHost, Editor
 	private async extend(end: TimelineEnd): Promise<void> {
 		if (!this.ready || this.loading[end] || this.exhausted[end]) return;
 		if (!this.sections.length || this.scrollEl.clientHeight === 0) return;
-		this.loading[end] = true;
+		const loading = this.loading;
+		loading[end] = true;
 		try {
 			const sortStep = this.sortStep();
 			const step = (end === "start" ? -sortStep : sortStep) as -1 | 1;
@@ -554,7 +556,7 @@ export class JournalView extends ItemView implements DayHost, AnchorHost, Editor
 				if (epoch !== this.epoch) return;
 			}
 		} finally {
-			this.loading[end] = false;
+			loading[end] = false;
 		}
 	}
 
@@ -609,6 +611,7 @@ export class JournalView extends ItemView implements DayHost, AnchorHost, Editor
 	}
 
 	private forget(section: DaySection): void {
+		if (this.lastEditedDay === section) this.lastEditedDay = null;
 		this.resizeObserver?.unobserve(section.el);
 		this.byPath.delete(section.path);
 		if (section.file) this.byPath.delete(section.file.path);
@@ -1186,9 +1189,13 @@ export class JournalView extends ItemView implements DayHost, AnchorHost, Editor
 		this.registerEvent(
 			this.app.vault.on("rename", (file: TAbstractFile, oldPath: string) => {
 				const previous = this.byPath.get(oldPath);
-				if (previous && previous.file?.path === oldPath) {
-					this.byPath.delete(oldPath);
-					previous.setFile(null);
+				// Obsidian mutates TFile.path before dispatching rename. Match the
+				// object, then flush its editor to that renamed file before rebuilding.
+				if ((previous && previous.file === file) || !(file instanceof TFile)) {
+					if (previous && file instanceof TFile) previous.setFile(file);
+					if (this.ready) void this.rebuild(this.visibleDate());
+					else this.settingsPending = true;
+					return;
 				}
 				if (!previous) this.ensureVisiblePath(oldPath);
 				if (file instanceof TFile) this.attachFile(file);
@@ -1353,19 +1360,9 @@ export class JournalView extends ItemView implements DayHost, AnchorHost, Editor
 		// daily-note configuration actually moved.
 		const signature = JSON.stringify(this.plugin.daily.config());
 		if (signature === this.configSignature) return;
-		this.configSignature = signature;
-		this.plugin.index.ensureCurrent();
-		this.plugin.filteredIndex.ensureCurrent();
-		this.syncWithIndex();
-
-		let changed = false;
-		for (const section of this.sections) {
-			const before = section.path;
-			section.revalidate();
-			if (section.path !== before) changed = true;
-		}
-		this.syncDateSeparators();
-		if (changed) this.indexPaths();
+		// Flush while the existing sections still refer to their original files.
+		// Retargeting them first could write a dirty body into the new folder.
+		void this.rebuild(this.visibleDate());
 	}
 
 	/* ------------------------------------------------------------ settings */

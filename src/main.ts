@@ -111,8 +111,10 @@ export default class JournalViewPlugin extends Plugin {
 		);
 		this.registerEvent(
 			this.app.vault.on("rename", (file, oldPath) => {
-				this.index.handleDelete(oldPath);
-				if (file instanceof TFile) this.index.handleCreate(file);
+				if (file instanceof TFile) {
+					this.index.handleDelete(oldPath);
+					this.index.handleCreate(file);
+				} else this.index.rebuild();
 				this.filteredIndex.ensureCurrent();
 				this.syncDailyNoteActions();
 			}),
