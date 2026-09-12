@@ -724,8 +724,8 @@ button.journal-day-metadata-value-button:focus-visible,
 	);
 }
 
-/* A day that has just become an editor is held at the height of the preview it
-   replaced until the editor completes its first real layout pass. */
+/* Keep a visible day's preview height when focus opens its editor. Text edits
+   or returning to preview mode release the minimum without a jump on click. */
 .journal-day-editing .journal-day-body {
 	min-height: max(
 		calc(var(--line-height-normal) * 1em + var(--journal-body-pad-top) + var(--journal-body-pad-bottom)),

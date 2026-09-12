@@ -1688,9 +1688,9 @@ export class DaySection {
 	 * mounts editors ahead of the reader, so by the time a day is close enough
 	 * to click it is already one.
 	 *
-	 * The preview height stays in place through the editor's first measurement,
-	 * preventing a half-laid-out frame without leaving a stale minimum height
-	 * behind for the reader to release with their first click.
+	 * Keep the preview's minimum height while a visible day becomes an editor.
+	 * Release it on a real edit or when returning to preview mode, so a click
+	 * alone cannot pull the following days upward.
 	 */
 	mountEditor(): void {
 		if (this.destroyed || this.editor) return;
@@ -1727,11 +1727,15 @@ export class DaySection {
 					file: this.file,
 					onReady: () => {
 						if (this.destroyed || token !== this.modeToken) return;
-						this.releaseHeight();
+						if (this.host.isOffScreen(this)) this.releaseHeight();
 					},
 					onChange: () => {
-						if (this.editor && this.isDirty) this.completedTasksPending = true;
-						this.releaseHeight();
+						// The constructor assigns its initial text before this.editor is
+						// available. That setup is not a user edit or a settled layout.
+						if (!this.editor) return;
+						const dirty = this.isDirty;
+						if (dirty) this.completedTasksPending = true;
+						if (dirty) this.releaseHeight();
 						this.updateBlankState();
 						this.scheduleSave();
 						this.host.onDayContentChanged(this);
@@ -1808,9 +1812,7 @@ export class DaySection {
 
 	private onEditorFocus(): void {
 		this.focused = true;
-		// Measurement should normally have released the guard before the
-		// reader arrives; focus is the defensive fallback.
-		this.releaseHeight();
+		// Focusing unchanged text must keep the following days in place.
 		this.el.addClass("journal-day-focused");
 		// Focus is the one signal every way in shares - a click the editor
 		// swallowed, a keyboard tab, or a jump to a date.

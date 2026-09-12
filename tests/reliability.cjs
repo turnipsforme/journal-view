@@ -378,3 +378,66 @@ test('a write that reached disk before reporting failure retries without a false
   assert.equal(f.day.queue.hasPending, false); assert.equal(f.files.size, 1);
   assert.equal(f.files.get(f.day.path), 'final text'); assert.equal(f.day.saveConflict, false);
 });
+
+function mountedHeightFixture() {
+  const e = environment();
+  const f = e.dayFixture('note body');
+  const editor = f.day.editor;
+  let callbacks;
+  let offscreen = false;
+  let minimum = 0;
+  e.load('editor').createJournalEditor = options => {
+    callbacks = options;
+    // Obsidian reports assigning the initial document during construction.
+    options.onChange();
+    return editor;
+  };
+  Object.assign(f.day, {
+    editor: null, modeToken: 0, heldHeight: 0,
+    bodyEl: {offsetHeight: 320, empty() {}, setCssProps(props) {minimum = parseFloat(props['--journal-held-height'])}},
+    el: {addClass() {}, removeClass() {}},
+    updateBlankState() {}, applyFindState() {}, scheduleFocusSettled() {},
+  });
+  f.day.host.plugin = {settings: {richEditor: true, saveDelay: 2000}};
+  f.day.host.isOffScreen = () => offscreen;
+  f.day.host.onDayContentChanged = () => {};
+  f.day.mountEditor();
+  return {...f, callbacks, minimum: () => minimum, setOffscreen: value => {offscreen = value}};
+}
+
+test('clicking a shorter visible editor keeps the following note at its preview position', () => {
+  const f = mountedHeightFixture();
+  // The preview is 320px high and its editor is 180px high. The following
+  // note's layout position is the greater of content height and min-height.
+  const followingTop = () => Math.max(180, f.minimum());
+  assert.equal(followingTop(), 320, 'initial document callback must not clear the height');
+  f.callbacks.onReady();
+  assert.equal(followingTop(), 320, 'first measurement must not shrink a visible note');
+  f.callbacks.onFocus();
+  f.callbacks.onChange(); // an unchanged document notification is not an edit
+  assert.equal(followingTop(), 320, 'focus must not shift the following note');
+  assert.equal(f.writes(), 0);
+});
+
+test('a real text edit releases the retained preview height and still saves normally', async () => {
+  const f = mountedHeightFixture();
+  f.callbacks.onReady(); f.callbacks.onFocus();
+  f.type('edited note body'); f.callbacks.onChange();
+  assert.equal(f.minimum(), 0);
+  await f.day.flush();
+  assert.equal(f.files.get(f.day.path), 'edited note body');
+});
+
+test('an editor measured offscreen can adopt its natural height before the reader arrives', () => {
+  const f = mountedHeightFixture();
+  f.setOffscreen(true); f.callbacks.onReady();
+  assert.equal(f.minimum(), 0);
+});
+
+test('returning an editor to preview mode clears its previous height hold', () => {
+  const f = mountedHeightFixture();
+  f.day.bodyEl.appendChild = () => {};
+  f.day.el.toggleClass = () => {};
+  f.day.applyPreview({component: {}, container: {}}, 'note body');
+  assert.equal(f.minimum(), 0); assert.equal(f.day.editor, null);
+});
