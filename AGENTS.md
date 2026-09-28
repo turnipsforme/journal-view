@@ -28,9 +28,10 @@ editable timeline. See [README.md](README.md) for behavior and installation.
 
 ## Testing
 
-There are no automated tests: nearly everything here is an interaction against
-Obsidian's own runtime. Verify changes in the throwaway vault instead of a real
-one, and say what you actually exercised rather than what should follow.
+Run `npm test` for deterministic save, conflict, lifecycle, and index regression
+checks. These exercise actual TypeScript methods with mocked vault APIs and timers;
+they do not emulate Obsidian's editor or DOM. Also verify interaction changes in the
+throwaway vault instead of a real one, and say what you actually exercised.
 
 ```bash
 npm run test-vault   # builds/repairs test-vault/, gitignored, plugin symlinked in
@@ -40,8 +41,8 @@ Add it in Obsidian once (vault switcher -> Manage vaults -> Open folder as vault
 after which the `obsidian` CLI can drive it without any clicking:
 
 ```bash
-obsidian vault=test-vault command id=journal-view:open
-obsidian vault=test-vault eval code='app.workspace.getLeavesOfType("journal-view")[0].view.sections.length'
+obsidian vault=test-vault command id=journal-view-wren:open
+obsidian vault=test-vault eval code='app.workspace.getLeavesOfType("journal-view-wren")[0].view.sections.length'
 ```
 
 Two traps, both of which look exactly like the feature being broken:

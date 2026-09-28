@@ -5,6 +5,8 @@ import { FilteredDailyNoteIndex, filterRulesSetting } from "./filter";
 import { createMoment } from "./moment";
 import type { Moment } from "./moment";
 import { DAY_KEY_FORMAT, DailyNoteIndex } from "./noteIndex";
+import { navigationPlacement } from "./navigation";
+import type { NavigationPlacement } from "./navigation";
 import {
 	DEFAULT_SETTINGS,
 	JournalViewSettingTab,
@@ -16,12 +18,14 @@ import {
 } from "./settings";
 import type { DailyHeaderStyle, DaySortDirection, OpenNoteAction } from "./settings";
 import { JournalView, VIEW_TYPE_JOURNAL } from "./view";
+import { JournalStatistics } from "./statistics";
+import { StatisticsView, VIEW_TYPE_STATISTICS } from "./statisticsView";
 
 type EntryDirection = -1 | 0 | 1;
 
 interface InitialJournalTarget {
 	date: Moment;
-	focusAtEnd: boolean;
+	focusAtEnd: NavigationPlacement | undefined;
 	revealThroughFilters: boolean;
 }
 
@@ -30,6 +34,7 @@ export default class JournalViewPlugin extends Plugin {
 	daily!: DailyNoteResolver;
 	index!: DailyNoteIndex;
 	filteredIndex!: FilteredDailyNoteIndex;
+	statistics!: JournalStatistics;
 	readonly workspaceEditors = new WorkspaceEditorBridge(this.app);
 	private dailyNoteActions = new Map<MarkdownView, HTMLElement>();
 	private settingsTab: JournalViewSettingTab | null = null;
@@ -44,6 +49,9 @@ export default class JournalViewPlugin extends Plugin {
 	);
 
 	private updateViews(): void {
+		for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_STATISTICS)) {
+			if (leaf.view instanceof StatisticsView) leaf.view.onSettingsChanged();
+		}
 		for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_JOURNAL)) {
 			const view = leaf.view;
 			if (view instanceof JournalView) void view.onSettingsChanged();
@@ -76,6 +84,7 @@ export default class JournalViewPlugin extends Plugin {
 	async onload(): Promise<void> {
 		await this.loadSettings();
 		this.daily = new DailyNoteResolver(this.app, () => this.settings);
+		this.statistics = this.addChild(new JournalStatistics(this.app));
 		this.index = new DailyNoteIndex(this.app, this.daily);
 		this.filteredIndex = new FilteredDailyNoteIndex(this.app, this.index, () => this.settings.filterRules);
 		// onLayoutReady queues callbacks without returning an EventRef, so they
@@ -109,8 +118,10 @@ export default class JournalViewPlugin extends Plugin {
 		);
 		this.registerEvent(
 			this.app.vault.on("rename", (file, oldPath) => {
-				this.index.handleDelete(oldPath);
-				if (file instanceof TFile) this.index.handleCreate(file);
+				if (file instanceof TFile) {
+					this.index.handleDelete(oldPath);
+					this.index.handleCreate(file);
+				} else this.index.rebuild();
 				this.filteredIndex.ensureCurrent();
 				this.syncDailyNoteActions();
 			}),
@@ -128,6 +139,7 @@ export default class JournalViewPlugin extends Plugin {
 		this.register(() => this.clearDailyNoteActions());
 
 		this.registerView(VIEW_TYPE_JOURNAL, (leaf) => new JournalView(leaf, this));
+		this.registerView(VIEW_TYPE_STATISTICS, (leaf) => new StatisticsView(leaf, this));
 		this.app.workspace.onLayoutReady(() => {
 			if (!layoutReadyCallbacksEnabled || !this.settings.openJournalOnStartup) return;
 			void this.activateView(false).catch((error: unknown) => {
@@ -147,6 +159,11 @@ export default class JournalViewPlugin extends Plugin {
 			id: "open-new-tab",
 			name: "Open in a new tab",
 			callback: () => void this.activateView(true),
+		});
+		this.addCommand({
+			id: "statistics",
+			name: "Statistics",
+			callback: () => void this.openStatistics(),
 		});
 
 		this.addCommand({
@@ -184,10 +201,20 @@ export default class JournalViewPlugin extends Plugin {
 		});
 	}
 
+	async openStatistics(): Promise<void> {
+		const workspace = this.app.workspace;
+		let leaf = workspace.getLeavesOfType(VIEW_TYPE_STATISTICS)[0];
+		if (!leaf) {
+			leaf = workspace.getLeaf(true);
+			await leaf.setViewState({ type: VIEW_TYPE_STATISTICS, active: true });
+		}
+		await workspace.revealLeaf(leaf);
+	}
+
 	async activateView(
 		forceNewTab = false,
 		date?: Moment,
-		focusAtEnd = false,
+		focusAtEnd?: NavigationPlacement,
 		revealThroughFilters = false,
 	): Promise<void> {
 		const { workspace } = this.app;
@@ -217,8 +244,8 @@ export default class JournalViewPlugin extends Plugin {
 		}
 		await workspace.revealLeaf(leaf);
 		if (date && !created && leaf.view instanceof JournalView) {
-			if (revealThroughFilters) leaf.view.goToCommandDate(date, true);
-			else leaf.view.goToDate(date, true);
+			if (revealThroughFilters) leaf.view.goToCommandDate(date, true, focusAtEnd);
+			else leaf.view.goToDate(date, true, focusAtEnd);
 		}
 	}
 
@@ -231,20 +258,21 @@ export default class JournalViewPlugin extends Plugin {
 
 	private async openJournalEntry(direction: EntryDirection): Promise<void> {
 		const date = this.entryDate(direction);
+		const atEnd = navigationPlacement(this.settings.goToNotePosition);
 		const { workspace } = this.app;
 		const existing = workspace.getLeavesOfType(VIEW_TYPE_JOURNAL);
 		const active = workspace.getActiveViewOfType(JournalView);
 		const leaf = active?.leaf ?? existing[0];
 		if (!leaf) {
-			await this.activateView(false, date, true, direction !== 0);
+			await this.activateView(false, date, atEnd, direction !== 0);
 			return;
 		}
 
 		await workspace.revealLeaf(leaf);
 		const view = leaf.view;
 		if (!(view instanceof JournalView)) return;
-		if (direction === 0) view.goToToday(true);
-		else view.goToCommandDate(date, true);
+		if (direction === 0) view.goToToday(true, atEnd);
+		else view.goToCommandDate(date, true, atEnd);
 	}
 
 	private entryDate(direction: EntryDirection): Moment {
@@ -319,6 +347,8 @@ export default class JournalViewPlugin extends Plugin {
 			maxLoadedDays: loadedDaysSetting(saved.maxLoadedDays),
 			richEditor: booleanSetting(saved.richEditor, DEFAULT_SETTINGS.richEditor),
 			focusTodayOnOpen: booleanSetting(saved.focusTodayOnOpen, DEFAULT_SETTINGS.focusTodayOnOpen),
+			goToNotePosition: saved.goToNotePosition === "top" || saved.goToNotePosition === "auto"
+				? saved.goToNotePosition : DEFAULT_SETTINGS.goToNotePosition,
 			openJournalOnStartup: booleanSetting(
 				saved.openJournalOnStartup,
 				DEFAULT_SETTINGS.openJournalOnStartup,

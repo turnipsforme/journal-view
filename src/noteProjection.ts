@@ -108,7 +108,9 @@ export function mergeProjectedNoteBody(
 ): MergedNoteBody | null {
 	const latest = hiddenPrefix === null ? null : splitLeadingH1(latestBody);
 	const latestEditorBody = normalizeEditorBody(latest?.visibleBody ?? latestBody);
-	if (latestEditorBody !== baseEditorBody) return null;
+	// Another pane (or a write whose acknowledgement failed) may already have
+	// saved exactly this text. That is a successful retry, not a conflict.
+	if (latestEditorBody !== baseEditorBody && latestEditorBody !== editorBody) return null;
 
 	const prefix = latest?.hiddenPrefix ?? null;
 	const serializedPrefix = prefix ?? "";

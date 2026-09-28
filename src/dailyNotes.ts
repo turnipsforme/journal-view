@@ -96,19 +96,23 @@ export class DailyNoteResolver {
 	 * template's frontmatter without duplicating it.
 	 */
 	async create(date: Moment): Promise<TFile> {
-		const path = this.pathFor(date);
+		return (await this.createForEdit(date)).file;
+	}
+
+	/** Identifies our own creation so a competing creator is never overwritten. */
+	async createForEdit(date: Moment, path = this.pathFor(date)): Promise<{ file: TFile; createdContent: string | null }> {
 		const existing = this.app.vault.getAbstractFileByPath(path);
-		if (existing instanceof TFile) return existing;
+		if (existing instanceof TFile) return { file: existing, createdContent: null };
 
 		await this.ensureFolder(path);
 		const body = await this.templateContent(date);
 		try {
-			return await this.app.vault.create(path, body);
+			return { file: await this.app.vault.create(path, body), createdContent: body };
 		} catch (error) {
 			// Someone (another view, a sync client) may have created it in the
 			// meantime - reuse it rather than failing the keystroke.
 			const raced = this.app.vault.getAbstractFileByPath(path);
-			if (raced instanceof TFile) return raced;
+			if (raced instanceof TFile) return { file: raced, createdContent: null };
 			throw error;
 		}
 	}
