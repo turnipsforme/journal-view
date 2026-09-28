@@ -18,6 +18,8 @@ import {
 } from "./settings";
 import type { DailyHeaderStyle, DaySortDirection, OpenNoteAction } from "./settings";
 import { JournalView, VIEW_TYPE_JOURNAL } from "./view";
+import { JournalStatistics } from "./statistics";
+import { StatisticsView, VIEW_TYPE_STATISTICS } from "./statisticsView";
 
 type EntryDirection = -1 | 0 | 1;
 
@@ -32,6 +34,7 @@ export default class JournalViewPlugin extends Plugin {
 	daily!: DailyNoteResolver;
 	index!: DailyNoteIndex;
 	filteredIndex!: FilteredDailyNoteIndex;
+	statistics!: JournalStatistics;
 	readonly workspaceEditors = new WorkspaceEditorBridge(this.app);
 	private dailyNoteActions = new Map<MarkdownView, HTMLElement>();
 	private settingsTab: JournalViewSettingTab | null = null;
@@ -46,6 +49,9 @@ export default class JournalViewPlugin extends Plugin {
 	);
 
 	private updateViews(): void {
+		for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_STATISTICS)) {
+			if (leaf.view instanceof StatisticsView) leaf.view.onSettingsChanged();
+		}
 		for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_JOURNAL)) {
 			const view = leaf.view;
 			if (view instanceof JournalView) void view.onSettingsChanged();
@@ -78,6 +84,7 @@ export default class JournalViewPlugin extends Plugin {
 	async onload(): Promise<void> {
 		await this.loadSettings();
 		this.daily = new DailyNoteResolver(this.app, () => this.settings);
+		this.statistics = this.addChild(new JournalStatistics(this.app));
 		this.index = new DailyNoteIndex(this.app, this.daily);
 		this.filteredIndex = new FilteredDailyNoteIndex(this.app, this.index, () => this.settings.filterRules);
 		// onLayoutReady queues callbacks without returning an EventRef, so they
@@ -111,8 +118,10 @@ export default class JournalViewPlugin extends Plugin {
 		);
 		this.registerEvent(
 			this.app.vault.on("rename", (file, oldPath) => {
-				this.index.handleDelete(oldPath);
-				if (file instanceof TFile) this.index.handleCreate(file);
+				if (file instanceof TFile) {
+					this.index.handleDelete(oldPath);
+					this.index.handleCreate(file);
+				} else this.index.rebuild();
 				this.filteredIndex.ensureCurrent();
 				this.syncDailyNoteActions();
 			}),
@@ -130,6 +139,7 @@ export default class JournalViewPlugin extends Plugin {
 		this.register(() => this.clearDailyNoteActions());
 
 		this.registerView(VIEW_TYPE_JOURNAL, (leaf) => new JournalView(leaf, this));
+		this.registerView(VIEW_TYPE_STATISTICS, (leaf) => new StatisticsView(leaf, this));
 		this.app.workspace.onLayoutReady(() => {
 			if (!layoutReadyCallbacksEnabled || !this.settings.openJournalOnStartup) return;
 			void this.activateView(false).catch((error: unknown) => {
@@ -149,6 +159,11 @@ export default class JournalViewPlugin extends Plugin {
 			id: "open-new-tab",
 			name: "Open in a new tab",
 			callback: () => void this.activateView(true),
+		});
+		this.addCommand({
+			id: "statistics",
+			name: "Statistics",
+			callback: () => void this.openStatistics(),
 		});
 
 		this.addCommand({
@@ -184,6 +199,16 @@ export default class JournalViewPlugin extends Plugin {
 		void Promise.all(flushes).catch((error: unknown) => {
 			console.error("Journal View: could not flush all pending edits during unload", error);
 		});
+	}
+
+	async openStatistics(): Promise<void> {
+		const workspace = this.app.workspace;
+		let leaf = workspace.getLeavesOfType(VIEW_TYPE_STATISTICS)[0];
+		if (!leaf) {
+			leaf = workspace.getLeaf(true);
+			await leaf.setViewState({ type: VIEW_TYPE_STATISTICS, active: true });
+		}
+		await workspace.revealLeaf(leaf);
 	}
 
 	async activateView(

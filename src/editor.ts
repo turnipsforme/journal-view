@@ -18,6 +18,8 @@ export interface JournalEditorOptions {
 	placeholder: string;
 	/** The note being edited, when it already exists. Used for link resolution. */
 	file: TFile | null;
+	/** Rebuilds the complete note, frontmatter included, around the editor's body. */
+	noteContent: (body: string) => string | null;
 	onChange: () => void;
 	/** Called after the editor has completed its first real layout pass. */
 	onReady: () => void;
@@ -28,10 +30,12 @@ export interface JournalEditorOptions {
 
 export interface JournalEditor {
 	getValue(): string;
+	/** A failed internal read must never be submitted as an empty edit. */
+	tryGetValue(): string | null;
 	getSelectionRange(): TextSelection | null;
 	setSelectionRange(selection: TextSelection): void;
 	/** Replaces the contents; `preserveSelection` is for a clean external update. */
-	setValue(value: string, preserveSelection?: boolean): void;
+	setValue(value: string, preserveSelection?: boolean): boolean;
 	setFile(file: TFile | null): void;
 	focus(): void;
 	hasFocus(): boolean;
@@ -266,19 +270,29 @@ function notifyFileOpen(workspace: WorkspaceEditorHost, file: TFile | null): voi
 }
 
 /**
- * Publishes the focused editor's in-memory text to Word Count. Existing notes
- * use the same workspace event as a native Markdown view. A day without a file
- * cannot: `getActiveFile()` falls back to the last real file, so Word Count
- * rejects a null preview and retains that file's count. Calling its guarded
- * preview handler directly is the only way to represent the unsaved editor
- * without broadcasting an empty preview for an unrelated file.
+ * Publishes the focused editor's in-memory text. Edits to an existing note use
+ * the same workspace event as a native Markdown view, which other open views of
+ * the file adopt as their complete content: `read` must therefore return the
+ * whole note, frontmatter included, or those views lose it when they save.
+ *
+ * Focus and cursor moves change nothing another view needs, and broadcasting
+ * then would overwrite a view's unsaved edits, so they only refresh Word Count
+ * through its guarded preview handler. A day without a file always does:
+ * `getActiveFile()` falls back to the last real file, so Word Count rejects a
+ * null preview and retains that file's count.
  */
-function publishWorkspaceContent(app: App, owner: ActiveEditorOwner, content: string): void {
+function publishWorkspaceContent(
+	app: App,
+	owner: ActiveEditorOwner,
+	read: () => string | null,
+	changed: boolean,
+): void {
 	try {
 		const workspace = app.workspace as unknown as WorkspaceEditorHost;
 		if (workspace.activeEditor !== owner) return;
-		if (owner.file) {
-			workspace.trigger("quick-preview", owner.file, content);
+		if (changed && owner.file) {
+			const content = read();
+			if (content !== null) workspace.trigger("quick-preview", owner.file, content);
 			return;
 		}
 
@@ -286,6 +300,8 @@ function publishWorkspaceContent(app: App, owner: ActiveEditorOwner, content: st
 		const plugin = internalPlugins?.getPluginById("word-count");
 		const instance = plugin?.instance;
 		if (!plugin?.enabled || typeof instance?.onQuickPreview !== "function") return;
+		const content = read();
+		if (content === null) return;
 		plugin.statusBarEl?.toggle?.(true);
 		// The handler strips frontmatter and Markdown syntax before counting. Its
 		// file argument is only an identity check against the current active file.
@@ -308,13 +324,14 @@ function resolveEditorCtor(app: App): EditorCtor | null {
 	if (cachedCtor !== undefined) return cachedCtor;
 
 	cachedCtor = null;
+	let probe: Record<string, unknown> | null = null;
 	try {
 		const factory = app.embedRegistry?.embedByExtension?.["md"];
 		if (!factory) return cachedCtor;
 
 		const candidate = factory({ app, containerEl: createDiv() }, null, "");
 		if (!candidate || typeof candidate !== "object") return cachedCtor;
-		const probe = candidate as Record<string, unknown>;
+		probe = candidate as Record<string, unknown>;
 		probe.editable = true;
 		if (typeof probe.showEditor === "function") probe.showEditor.call(probe);
 		const editMode = probe.editMode;
@@ -326,10 +343,15 @@ function resolveEditorCtor(app: App): EditorCtor | null {
 				if (typeof ctor === "function") cachedCtor = ctor as EditorCtor;
 			}
 		}
-		if (typeof probe.unload === "function") probe.unload.call(probe);
 	} catch (error) {
 		console.warn("Journal View: Obsidian's embedded editor is unavailable, using the plain editor", error);
 		cachedCtor = null;
+	} finally {
+		try {
+			if (typeof probe?.unload === "function") probe.unload.call(probe);
+		} catch (error) {
+			console.warn("Journal View: could not release the editor probe", error);
+		}
 	}
 	return cachedCtor;
 }
@@ -344,11 +366,13 @@ class RichEditor implements JournalEditor {
 	private readyFrame = 0;
 	private readyReported = false;
 	private destroyed = false;
+	private lastReadableValue: string;
 
 	constructor(
 		private options: JournalEditorOptions,
 		Ctor: EditorCtor,
 	) {
+		this.lastReadableValue = options.value;
 		this.owner = {
 			app: options.app,
 			file: options.file,
@@ -386,7 +410,7 @@ class RichEditor implements JournalEditor {
 			// the selection is empty. A journal is not a file view, so republish
 			// this day's text after both edits and collapsed-cursor moves. Leave a
 			// real selection alone: Word Count intentionally reports its count.
-			if (changed || update.selectionSet) this.scheduleWorkspaceContent();
+			if (changed || update.selectionSet) this.scheduleWorkspaceContent(changed);
 			if (changed) this.options.onChange();
 		};
 
@@ -395,10 +419,19 @@ class RichEditor implements JournalEditor {
 		// that lifecycle unless we do it here. In particular, live-preview embeds
 		// only register their metadata-change listeners once their component tree
 		// is loaded.
-		instance.load?.();
-		this.instance.set?.(options.value, true);
-		this.dropScrollRequest();
-		this.reportInitialLayout();
+		try {
+			if (typeof instance.set !== "function" ||
+				(typeof instance.get !== "function" && typeof instance.editor?.getValue !== "function")) {
+				throw new Error("The embedded editor does not expose text access");
+			}
+			instance.load?.();
+			instance.set(options.value, true);
+			this.dropScrollRequest();
+			this.reportInitialLayout();
+		} catch (error) {
+			this.destroy();
+			throw error;
+		}
 
 		this.focusIn = (event) => {
 			if (focusStayedInside(options.container, event)) return;
@@ -417,23 +450,27 @@ class RichEditor implements JournalEditor {
 	}
 
 	/**
-	 * Publishes now, then once more after the file-open read and focus events
-	 * normally settle. A real selection keeps Obsidian's selection count.
+	 * Publishes now, then refreshes the count once more after the file-open read
+	 * and focus events normally settle. A real selection keeps Obsidian's
+	 * selection count.
 	 */
-	private scheduleWorkspaceContent(): void {
+	private scheduleWorkspaceContent(changed = false): void {
 		this.cancelWorkspaceContent();
 		if (this.owner.getSelection()) return;
-		this.publishCurrentContent();
+		this.publishCurrentContent(changed);
 		this.workspaceContentTimer = window.setTimeout(() => {
 			this.workspaceContentTimer = 0;
-			if (!this.destroyed) this.publishCurrentContent();
+			if (!this.destroyed) this.publishCurrentContent(false);
 		}, WORKSPACE_CONTENT_DELAY);
 	}
 
 	/** A failed internal read must not masquerade as an empty note. */
-	private publishCurrentContent(): void {
-		const content = this.readValue();
-		if (content !== null) publishWorkspaceContent(this.options.app, this.owner, content);
+	private publishCurrentContent(changed: boolean): void {
+		const read = () => {
+			const body = this.readValue();
+			return body === null ? null : this.options.noteContent(body);
+		};
+		publishWorkspaceContent(this.options.app, this.owner, read, changed);
 	}
 
 	private cancelWorkspaceContent(): void {
@@ -466,16 +503,26 @@ class RichEditor implements JournalEditor {
 
 	private readValue(): string | null {
 		try {
-			if (typeof this.instance?.get === "function") return this.instance.get() ?? "";
-			return this.instance?.editor?.getValue?.() ?? "";
+			const value = typeof this.instance?.get === "function"
+				? this.instance.get()
+				: this.instance?.editor?.getValue?.();
+			if (typeof value === "string") return (this.lastReadableValue = value);
 		} catch (error) {
 			console.warn("Journal View: could not read editor contents", error);
-			return null;
 		}
+		try {
+			const doc = this.instance?.editor?.cm?.state?.doc;
+			if (doc) return (this.lastReadableValue = doc.toString());
+		} catch { /* keep the last reliable snapshot for display, never for saving */ }
+		return null;
 	}
 
 	getValue(): string {
-		return this.readValue() ?? "";
+		return this.readValue() ?? this.lastReadableValue;
+	}
+
+	tryGetValue(): string | null {
+		return this.readValue();
 	}
 
 	getSelectionRange(): TextSelection | null {
@@ -488,15 +535,19 @@ class RichEditor implements JournalEditor {
 		this.dropScrollRequest();
 	}
 
-	setValue(value: string, preserveSelection = false): void {
+	setValue(value: string, preserveSelection = false): boolean {
 		try {
 			// Obsidian's non-clearing path applies the smallest document change,
 			// mapping the selection through it. Template offers retain the clearing
 			// behavior they have always used; only external updates ask to preserve.
-			this.instance?.set?.(value, !preserveSelection);
+			if (typeof this.instance?.set !== "function") return false;
+			this.instance.set(value, !preserveSelection);
+			this.lastReadableValue = value;
 			this.dropScrollRequest();
+			return true;
 		} catch (error) {
 			console.warn("Journal View: could not update editor contents", error);
+			return false;
 		}
 	}
 
@@ -640,8 +691,8 @@ class RichEditor implements JournalEditor {
 		this.cancelWorkspaceContent();
 		if (this.readyFrame) window.cancelAnimationFrame(this.readyFrame);
 		this.readyFrame = 0;
-		this.options.container.removeEventListener("focusin", this.focusIn);
-		this.options.container.removeEventListener("focusout", this.focusOut);
+		if (this.focusIn) this.options.container.removeEventListener("focusin", this.focusIn);
+		if (this.focusOut) this.options.container.removeEventListener("focusout", this.focusOut);
 		try {
 			this.instance?.destroy?.();
 		} catch (error) {
@@ -700,6 +751,10 @@ class PlainEditor implements JournalEditor {
 		return this.textarea.value;
 	}
 
+	tryGetValue(): string {
+		return this.textarea.value;
+	}
+
 	getSelectionRange(): TextSelection {
 		const { selectionStart: start, selectionEnd: end, selectionDirection } = this.textarea;
 		return selectionDirection === "backward" ? { anchor: end, head: start } : { anchor: start, head: end };
@@ -709,8 +764,8 @@ class PlainEditor implements JournalEditor {
 		this.textarea.setSelectionRange(Math.min(anchor, head), Math.max(anchor, head), head < anchor ? "backward" : "forward");
 	}
 
-	setValue(value: string, preserveSelection = false): void {
-		if (this.textarea.value === value) return;
+	setValue(value: string, preserveSelection = false): boolean {
+		if (this.textarea.value === value) return true;
 		const selectionStart = this.textarea.selectionStart;
 		const selectionEnd = this.textarea.selectionEnd;
 		this.textarea.value = value;
@@ -718,6 +773,7 @@ class PlainEditor implements JournalEditor {
 			this.textarea.setSelectionRange(selectionStart, selectionEnd);
 		}
 		this.autoGrow();
+		return true;
 	}
 
 	placeCursorAtEnd(reveal = false): void {
