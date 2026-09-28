@@ -41,8 +41,8 @@ Add it in Obsidian once (vault switcher -> Manage vaults -> Open folder as vault
 after which the `obsidian` CLI can drive it without any clicking:
 
 ```bash
-obsidian vault=test-vault command id=journal-view:open
-obsidian vault=test-vault eval code='app.workspace.getLeavesOfType("journal-view")[0].view.sections.length'
+obsidian vault=test-vault command id=journal-view-wren:open
+obsidian vault=test-vault eval code='app.workspace.getLeavesOfType("journal-view-wren")[0].view.sections.length'
 ```
 
 Two traps, both of which look exactly like the feature being broken:

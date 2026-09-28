@@ -1725,6 +1725,15 @@ export class DaySection {
 					value: body,
 					placeholder,
 					file: this.file,
+					noteContent: (editorText) => {
+						const content = this.latestContent;
+						if (this.file && !content && !this.lastKnownContent) return null;
+						const start = getFrontMatterInfo(content).contentStart;
+						const merged = mergeProjectedNoteBody(
+							content.slice(start), this.lastKnownEditorBody, editorText, this.hiddenNotePrefix,
+						);
+						return merged ? content.slice(0, start) + merged.body : null;
+					},
 					onReady: () => {
 						if (this.destroyed || token !== this.modeToken) return;
 						if (this.host.isOffScreen(this)) this.releaseHeight();

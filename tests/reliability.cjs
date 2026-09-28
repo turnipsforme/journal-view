@@ -133,6 +133,23 @@ test('editor document supplies current text when its convenience getter breaks',
   assert.equal(editor.tryGetValue(), 'current document');
 });
 
+test('live editor updates include frontmatter and skip conflicted content', () => {
+  const e = environment(); const {RichEditor} = e.load('editor');
+  const editor = Object.create(RichEditor.prototype);
+  const file = new e.TFile('Journal/today.md'); const owner = {file}; const events = [];
+  editor.owner = owner;
+  editor.instance = {get: () => 'new body'};
+  editor.options = {
+    app: {workspace: {activeEditor: owner, trigger: (...args) => events.push(args)}},
+    noteContent: body => `---\nmood: good\n---\n# Title\n\n${body}`,
+  };
+  editor.publishCurrentContent(true);
+  assert.deepEqual(events[0], ['quick-preview', file, '---\nmood: good\n---\n# Title\n\nnew body']);
+  editor.options.noteContent = () => null;
+  editor.publishCurrentContent(true);
+  assert.equal(events.length, 1);
+});
+
 test('failed teardown writes retry automatically and release their timer after recovery', async () => {
   const e = environment(); const f = e.dayFixture('original');
   const vault = f.day.host.app.vault; const process = vault.process;

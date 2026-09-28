@@ -1,7 +1,11 @@
-# Journal View
+# Journal View (Wren)
 
-Give your daily notes a sense of continuity. Journal View brings them together in one scrollable,
-editable timeline, so revisiting the past and writing today feel like part of the same story.
+This is Wren's fork of [RUverse's Journal View](https://github.com/RUverse/journal-view),
+with opinionated design changes inspired by Reflect. It brings your daily notes together in one
+scrollable, editable timeline, so revisiting the past and writing today feel like part of the same story.
+
+The fork adds more control over the journal's headings, spacing, today's card, and navigation. It
+also includes Completed Tasks support, expanded text selection, and extra care around saving edits.
 
 <p align="center">
   <img src="assets/journal-view.png" alt="Journal View open in Obsidian">
@@ -93,6 +97,34 @@ and after backlinks. **Hide today's background** keeps that spacing and uses the
 italic colour for today's date, including Things' pink emphasis colour.
 
 
+## Statistics
+
+Choose **Statistics** in the journal pane's top-right **More options** menu, or
+run **Journal View: Statistics** from the command palette. A separate tab shows
+the current year as a mosaic of daily notes. Use the arrows or enter a year to
+explore another year; **This year** returns to the current one.
+
+Each square represents one day. Missing notes are empty, and existing notes with
+zero words have an outline. The four color levels represent **1–149**, **150–399**,
+**400–999**, and **1,000+** words. Hover or select a day to see its date and count,
+then choose **Open in journal** to visit an existing entry. Arrow keys move between
+days; Home and End move to the first and last day of the year. Narrow panes scroll
+horizontally to keep the tiles readable.
+
+Statistics include all daily notes from your configured folder and date format,
+regardless of journal filters. Counts use the saved Markdown body, excluding YAML
+properties: each whitespace-separated token containing a letter or number counts
+as a word. Headings, code, links, and template text can contribute; embedded notes
+are not expanded. Languages without spaces are not segmented into individual
+words. The colors show the note's current length, not words written on that date.
+Changes appear after the note is saved.
+
+Only existing notes in the selected year are read, with two reads at a time and
+progressive updates. A bounded memory cache keeps counts for recently visited
+years; closing Obsidian clears it. Missing notes, counts still loading, and read
+failures have distinct appearances. Large individual notes may take longer to
+count, but counting yields periodically so year navigation remains available.
+
 ## Startup
 
 Journal View is a custom view, so the Homepage plugin cannot select it as a homepage note. Enable
@@ -121,6 +153,21 @@ the current editor contents and checked again when a template finishes loading.
 Journal View works locally with files in your Obsidian vault. It does not make network requests,
 collect telemetry, require an account, or access files outside your vault.
 
+## Install this fork
+
+Download `main.js`, `manifest.json`, and `styles.css` from the latest
+[Wren release](https://github.com/turnipsforme/journal-view/releases). Put all three files in
+`.obsidian/plugins/journal-view-wren/` inside your vault, then enable **Journal View (Wren)** in
+Obsidian's community plugin settings. Its plugin ID is `journal-view-wren`, so Obsidian treats it
+as a separate plugin from RUverse's Journal View.
+
+## Bringing in upstream changes
+
+The Git history keeps the upstream commits. To bring in a future RUverse release, run
+`git fetch upstream --no-tags` and `git merge upstream/main` on a new branch, resolve any conflicts,
+then build and test the result. Keep this fork's `manifest.json` identity and design choices when
+resolving conflicts.
+
 ## License
 
-[MIT](LICENSE) © 2026 RUverse
+[MIT](LICENSE) © 2026 RUverse and Wren. The original plugin is by RUverse.
