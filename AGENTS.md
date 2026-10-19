@@ -170,7 +170,9 @@ Resolve conflicts in favor of this fork's identity and the behavior above, then:
 When the user asks to prepare a release:
 
 - Confirm the intended semantic version; do not guess the release version when
-  the user has not specified it.
+  the user has not specified it. The fork tracks upstream's version numbers: its
+  release version is the upstream version whose changes it includes
+  (e.g. 1.4.4), with the fork's own changes layered on top.
 - Make sure `dev` is clean, up to date with `origin/dev`, and contains all and
   only the feature and fix pull requests intended for the release. Prepare the
   release on `dev`, not on a feature branch or `main`.
