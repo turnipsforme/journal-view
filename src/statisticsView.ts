@@ -2,6 +2,8 @@ import { ItemView, Notice, TFile, ViewStateResult, WorkspaceLeaf, setIcon } from
 import type JournalViewPlugin from "./main";
 import { createMoment } from "./moment";
 import type { Moment } from "./moment";
+import { columnsThatFit, cssPixels } from "./mosaicColumns";
+import { NewWordsMosaic } from "./newWords";
 import { DAY_KEY_FORMAT } from "./noteIndex";
 import { NoteStatistics, wordCountLevel } from "./statistics";
 
@@ -10,8 +12,23 @@ export const VIEW_TYPE_STATISTICS = "journal-statistics-wren";
 interface DayTile {
 	date: Moment;
 	button: HTMLButtonElement;
-	file: TFile | null;
+	/** The day's notes, in journal order. */
+	files: TFile[];
+	/** One count per note; null while it is still being read. */
+	counts: (NoteStatistics | null)[];
+	/** The day as a whole: every note's words added up, once all are counted. */
 	result: NoteStatistics | null;
+}
+
+/** Adds up a day's note counts; any note that could not be read makes the day unreadable. */
+function combineCounts(counts: (NoteStatistics | null)[]): NoteStatistics | null {
+	let words = 0;
+	for (const count of counts) {
+		if (count === null) return null;
+		if (count.status === "error") return count;
+		words += count.words;
+	}
+	return { status: "ready", words };
 }
 
 export class StatisticsView extends ItemView {
@@ -25,11 +42,16 @@ export class StatisticsView extends ItemView {
 	private yearInput!: HTMLInputElement;
 	private previous!: HTMLButtonElement;
 	private next!: HTMLButtonElement;
+	private scroller!: HTMLElement;
 	private grid!: HTMLElement;
+	private weeks: HTMLElement[] = [];
+	/** The first tile in a week that is not left out for want of room. */
+	private firstShown = 0;
 	private status!: HTMLElement;
 	private detail!: HTMLElement;
 	private openButton!: HTMLButtonElement;
 	private selected: DayTile | null = null;
+	private newWords: NewWordsMosaic | null = null;
 
 	constructor(leaf: WorkspaceLeaf, private plugin: JournalViewPlugin) { super(leaf); }
 
@@ -73,8 +95,8 @@ export class StatisticsView extends ItemView {
 		this.registerDomEvent(this.yearInput, "change", () => this.changeYear(Number(this.yearInput.value)));
 
 		const card = page.createDiv({ cls: "journal-statistics-card" });
-		const scroller = card.createDiv({ cls: "journal-statistics-scroll" });
-		this.grid = scroller.createDiv({ cls: "journal-statistics-grid", attr: { role: "group", "aria-label": "Daily note word counts" } });
+		this.scroller = card.createDiv({ cls: "journal-statistics-scroll" });
+		this.grid = this.scroller.createDiv({ cls: "journal-statistics-grid", attr: { role: "group", "aria-label": "Daily note word counts" } });
 		const legend = card.createDiv({ cls: "journal-statistics-legend" });
 		for (const [level, label] of ["No note / 0 words", "1–149", "150–399", "400–999", "1,000+"].entries()) {
 			const item = legend.createSpan();
@@ -88,7 +110,7 @@ export class StatisticsView extends ItemView {
 		this.openButton.hidden = true;
 		this.registerDomEvent(this.openButton, "click", () => {
 			const tile = this.selected;
-			if (!tile?.file || !this.plugin.daily.fileFor(tile.date)) return;
+			if (!tile?.files.length || !this.plugin.index.has(tile.date.format(DAY_KEY_FORMAT))) return;
 			void this.plugin.activateView(false, tile.date, false, true).catch((error: unknown) => {
 				console.error("Journal View: could not open statistics entry", error);
 				new Notice("Could not open this journal entry.");
@@ -97,9 +119,13 @@ export class StatisticsView extends ItemView {
 		this.register(this.plugin.statistics.subscribe((paths, folder) => {
 			const relevant = folder
 				? paths.some((path) => Array.from(this.paths).some((note) => note.startsWith(`${path}/`)))
-				: paths.some((path) => this.paths.has(path));
+				: paths.some((path) => this.paths.has(path) || this.isNoteInYear(path));
 			if (relevant) this.scheduleRefresh();
 		}));
+		const resize = new ResizeObserver(() => this.fitWeeks());
+		resize.observe(this.scroller);
+		this.register(() => resize.disconnect());
+		this.newWords = this.addChild(new NewWordsMosaic(page, this.plugin));
 		this.registerEvent(this.app.workspace.on("layout-change", () => this.onSettingsChanged()));
 		this.registerEvent(this.app.workspace.on("active-leaf-change", () => this.onSettingsChanged()));
 		this.renderYear();
@@ -109,12 +135,21 @@ export class StatisticsView extends ItemView {
 		this.closed = true;
 		this.epoch++;
 		window.clearTimeout(this.refreshTimer);
+		if (this.newWords) this.removeChild(this.newWords);
+		this.newWords = null;
 		this.tiles = [];
+		this.weeks = [];
 		this.paths.clear();
 		this.selected = null;
 	}
 
+	/** True for a daily-note path dated in the year on screen, e.g. a note just added to a day. */
+	private isNoteInYear(path: string): boolean {
+		return this.plugin.index.keyForPath(path)?.startsWith(`${String(this.year).padStart(4, "0")}-`) ?? false;
+	}
+
 	onSettingsChanged(): void {
+		this.newWords?.onSettingsChanged();
 		if (!this.closed && this.configSignature !== JSON.stringify(this.plugin.daily.config())) this.scheduleRefresh();
 	}
 
@@ -133,6 +168,7 @@ export class StatisticsView extends ItemView {
 		window.clearTimeout(this.refreshTimer);
 		this.grid.empty();
 		this.tiles = [];
+		this.weeks = [];
 		this.selected = null;
 		this.detail.setText("Select a day to see its word count.");
 		this.openButton.hidden = true;
@@ -148,6 +184,7 @@ export class StatisticsView extends ItemView {
 		const today = createMoment().format(DAY_KEY_FORMAT);
 		while (!cursor.isAfter(last)) {
 			const week = this.grid.createDiv({ cls: "journal-statistics-week" });
+			this.weeks.push(week);
 			const month = week.createSpan({ cls: "journal-statistics-month", attr: { "aria-hidden": "true" } });
 			for (let day = 0; day < 7; day++, cursor.add(1, "day")) {
 				if (cursor.isBefore(first) || cursor.isAfter(last)) {
@@ -161,7 +198,7 @@ export class StatisticsView extends ItemView {
 					attr: { "aria-label": `${cursor.format("LL")}: loading`, "data-date": key, tabindex: "-1" },
 				});
 				if (key === today) button.setAttribute("aria-current", "date");
-				const tile: DayTile = { date: cursor.clone(), button, file: null, result: null };
+				const tile: DayTile = { date: cursor.clone(), button, files: [], counts: [], result: null };
 				this.tiles.push(tile);
 				button.addEventListener("click", () => this.select(tile));
 				button.addEventListener("focus", () => this.select(tile));
@@ -170,18 +207,42 @@ export class StatisticsView extends ItemView {
 		}
 		const initial = this.tiles.find((tile) => tile.date.format(DAY_KEY_FORMAT) === today) ?? this.tiles[0];
 		if (initial) initial.button.tabIndex = 0;
+		this.fitWeeks();
 		void this.refreshCounts();
+	}
+
+	/**
+	 * Leaves out the earliest weeks when the pane is too narrow for the whole
+	 * year, so the rest shows without scrolling, and has the new-words mosaic
+	 * below match the width of the weeks shown.
+	 */
+	private fitWeeks(): void {
+		const fit = columnsThatFit(this.scroller, cssPixels(this.contentEl, "--journal-weekday-width"),
+			cssPixels(this.contentEl, "--journal-tile-size") + cssPixels(this.contentEl, "--journal-tile-gap"));
+		if (fit === null) return;
+		const hidden = Math.max(0, this.weeks.length - fit);
+		this.firstShown = 0;
+		for (const [at, week] of this.weeks.entries()) {
+			week.toggleClass("is-clipped", at < hidden);
+			if (at < hidden) this.firstShown += week.querySelectorAll("button").length;
+		}
+		this.contentEl.setCssProps({ "--journal-statistics-weeks": String(this.weeks.length - hidden) });
+		this.newWords?.fitYears();
+		// Keep the tile reached by Tab among those shown.
+		if (this.tiles.findIndex((tile) => tile.button.tabIndex === 0) < this.firstShown) {
+			for (const [at, tile] of this.tiles.entries()) tile.button.tabIndex = at === this.firstShown ? 0 : -1;
+		}
 	}
 
 	private navigateGrid(event: KeyboardEvent, tile: DayTile): void {
 		const index = this.tiles.indexOf(tile);
 		const destinations: Record<string, number> = {
 			ArrowLeft: index - 7, ArrowRight: index + 7, ArrowUp: index - 1, ArrowDown: index + 1,
-			Home: 0, End: this.tiles.length - 1,
+			Home: this.firstShown, End: this.tiles.length - 1,
 		};
 		if (!(event.key in destinations)) return;
 		event.preventDefault();
-		this.tiles[Math.max(0, Math.min(this.tiles.length - 1, destinations[event.key]))]?.button.focus();
+		this.tiles[Math.max(this.firstShown, Math.min(this.tiles.length - 1, destinations[event.key]))]?.button.focus();
 	}
 
 	private select(tile: DayTile): void {
@@ -194,19 +255,21 @@ export class StatisticsView extends ItemView {
 	}
 
 	private description(tile: DayTile): string {
-		const count = !tile.file ? "No note" : !tile.result ? "Counting…" :
-			tile.result.status === "error" ? "Could not read note" : `${tile.result.words.toLocaleString()} words`;
+		const notes = tile.files.length;
+		const count = !notes ? "No note" : !tile.result ? "Counting…" :
+			tile.result.status === "error" ? `Could not read ${notes === 1 ? "note" : "a note"}` :
+			`${tile.result.words.toLocaleString()} words${notes > 1 ? ` in ${notes} notes` : ""}`;
 		return `${tile.date.format("LL")}: ${count}`;
 	}
 
 	private updateDetail(): void {
 		if (!this.selected) return;
 		this.detail.setText(this.description(this.selected));
-		this.openButton.hidden = !this.selected.file;
+		this.openButton.hidden = !this.selected.files.length;
 	}
 
 	private updateTile(tile: DayTile): void {
-		const state = !tile.file ? "is-missing" : !tile.result ? "is-loading" :
+		const state = !tile.files.length ? "is-missing" : !tile.result ? "is-loading" :
 			tile.result.status === "error" ? "is-error" : `level-${wordCountLevel(tile.result.words)}`;
 		tile.button.className = `journal-statistics-tile ${state}${this.selected === tile ? " is-selected" : ""}`;
 		const description = this.description(tile);
@@ -227,26 +290,36 @@ export class StatisticsView extends ItemView {
 		const epoch = ++this.epoch;
 		const current = () => !this.closed && this.epoch === epoch;
 		this.configSignature = JSON.stringify(this.plugin.daily.config());
-		const pending: DayTile[] = [];
+		this.plugin.index.ensureCurrent();
+		const pending: { tile: DayTile; at: number }[] = [];
 		this.paths.clear();
 		for (const tile of this.tiles) {
 			this.paths.add(this.plugin.daily.pathFor(tile.date));
-			tile.file = this.plugin.daily.fileFor(tile.date);
-			tile.result = tile.file ? this.plugin.statistics.peek(tile.file) : null;
+			tile.files = this.plugin.index
+				.pathsFor(tile.date.format(DAY_KEY_FORMAT))
+				.map((path) => this.app.vault.getAbstractFileByPath(path))
+				.filter((file): file is TFile => file instanceof TFile);
+			tile.counts = tile.files.map((file) => this.plugin.statistics.peek(file));
+			tile.result = tile.files.length ? combineCounts(tile.counts) : null;
 			this.updateTile(tile);
-			if (tile.file && !tile.result) pending.push(tile);
+			for (const [at, file] of tile.files.entries()) {
+				this.paths.add(file.path);
+				if (!tile.counts[at]) pending.push({ tile, at });
+			}
 		}
 		this.grid.setAttribute("aria-busy", String(pending.length > 0));
 		this.status.setText(pending.length ? `Counting ${pending.length} notes…` : "");
 		let next = 0;
 		const worker = async () => {
 			while (current() && next < pending.length) {
-				const tile = pending[next++];
-				if (!tile.file) continue;
-				const result = await this.plugin.statistics.count(tile.file, current);
+				const { tile, at } = pending[next++];
+				const file = tile.files[at];
+				if (!file) continue;
+				const result = await this.plugin.statistics.count(file, current);
 				if (!current()) return;
 				if (result === null) { this.scheduleRefresh(); return; }
-				tile.result = result;
+				tile.counts[at] = result;
+				tile.result = combineCounts(tile.counts);
 				this.updateTile(tile);
 				// Cached reads may resolve immediately. Yield so progress can paint
 				// and navigation can cancel even a year of small, cached files.
@@ -256,7 +329,7 @@ export class StatisticsView extends ItemView {
 		await Promise.all([worker(), worker()]);
 		if (!current()) return;
 		this.grid.setAttribute("aria-busy", "false");
-		const notes = this.tiles.filter((tile) => tile.file).length;
+		const notes = this.tiles.reduce((total, tile) => total + tile.files.length, 0);
 		const failed = this.tiles.filter((tile) => tile.result?.status === "error").length;
 		this.status.setText(failed ? `${notes} notes · ${failed} could not be read. Reopen this year to retry.` :
 			`${notes} ${notes === 1 ? "note" : "notes"} in ${this.year}`);

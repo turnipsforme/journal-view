@@ -1,9 +1,9 @@
 {
 	"id": "journal-view-wren",
 	"name": "Journal View (Wren)",
-	"version": "1.3.0",
+	"version": "2.0.0",
 	"minAppVersion": "1.7.2",
-	"description": "A Reflect-inspired fork of Journal View with an opinionated, editable daily-note timeline.",
+	"description": "A Reflect-inspired fork of Journal View with an editable daily-note timeline and custom styling.",
 	"author": "Wren",
 	"authorUrl": "https://github.com/turnipsforme",
 	"isDesktopOnly": false

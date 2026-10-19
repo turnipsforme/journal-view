@@ -1,13 +1,22 @@
 # Journal View contributor guide
 
 Journal View is an Obsidian plugin that presents daily notes as one continuous,
-editable timeline. See [README.md](README.md) for behavior and installation.
+editable timeline. See [README.md](README.md) for an overview and
+[docs/guide.md](docs/guide.md) for behavior in detail.
 
 ## Development
 
 - Use TypeScript and Obsidian APIs; keep UI styling in `styles.css`.
-- Run `npm run typecheck` while developing and `npm run build` before handing
-  off changes. The build output, `main.js`, is intentionally ignored.
+- Run `npm run typecheck` while developing, and `npm run lint` and
+  `npm run build` before handing off changes. The build output, `main.js`, is
+  intentionally ignored.
+- `npm run lint` applies the rules of Obsidian's plugin review, and the `Check`
+  workflow runs it on every pull request. Keep `tsconfig.json` on `strict`:
+  looser compiler options turn some types into `any`, which hides warnings the
+  review would still raise.
+- `npm run lint` also checks `styles.css` against the review's CSS rules
+  (`stylelint.config.mjs`) and fails on any warning. Avoid `:has()`: toggle a
+  class from the code instead.
 - Preserve user content: flush pending edits during teardown and handle vault
   writes, renames, and concurrent file creation defensively.
 - Obsidian's embedded Markdown editor is an internal API. Keep access isolated
@@ -34,6 +43,7 @@ they do not emulate Obsidian's editor or DOM. Also verify interaction changes in
 throwaway vault instead of a real one, and say what you actually exercised.
 
 ```bash
+npm test             # tests/*.cjs
 npm run test-vault   # builds/repairs test-vault/, gitignored, plugin symlinked in
 ```
 
@@ -60,8 +70,18 @@ Two traps, both of which look exactly like the feature being broken:
 
 - `src/main.ts`: plugin lifecycle, commands, and view registration
 - `src/view.ts` / `src/day.ts`: timeline virtualization and per-day UI
+- `src/entry.ts`: one note inside a day - editor or preview, properties, saving
+- `src/noteLabel.ts`: the label naming a note beyond its date, and renaming it
+  by its title
 - `src/dailyNotes.ts` / `src/noteIndex.ts`: note resolution and indexing
+- `src/dayFiles.ts` / `src/dayFilesList.ts`: the other files from each day, and
+  the list of them at the bottom of a day
 - `src/editor.ts` / `src/saveQueue.ts`: editing and durable writes
+- `src/find.ts`: the find bar, and its search of the whole journal - loaded
+  days in their editors' text, every other note through `src/findCorpus.ts`, a
+  shared cache of note bodies, with the counts kept in `src/findResults.ts`
+- `src/noteBody.ts`: a note's body as an editor holds it, shared by editing
+  and find so offsets agree
 
 The view delegates to four collaborators, each holding the view through a small
 host interface it implements:
@@ -74,8 +94,76 @@ host interface it implements:
 
 Pure scroll geometry lives separately in `src/scroll.ts`.
 
+`src/statistics.ts` is the shared, lazy read cache behind the statistics tab:
+word counts and, through `src/vocabulary.ts`, each note's distinct words.
+`src/statisticsView.ts` draws the year mosaic and hosts `src/newWords.ts`, the
+journal-wide mosaic of words used for the first time each month.
+
 `src/datePicker.ts` is the toolbar's calendar: a scrolling column of months that
 hangs off the view rather than being part of it, and moves the journal by date.
+
+## This fork
+
+This repository is Wren's fork of RUverse's Journal View, not the upstream
+plugin. It keeps upstream's architecture and adds the behavior below. When
+upstream and the fork disagree, keep the fork's version unless the user says
+otherwise.
+
+**Identity.** The plugin ID is `journal-view-wren`, the journal view type is
+`journal-view-wren`, and the statistics view type is `journal-statistics-wren`.
+Commands therefore run as `journal-view-wren:open`. Do not copy upstream's
+`journal-view` ID, view types, or command prefix over these.
+
+**Fork-only files.**
+
+- `src/navigation.ts`: `NavigationPlacement` (`top` / `bottom` / `auto`) and the
+  line-count rule behind **Go to note position**.
+- `src/noteProjection.ts`: hides a leading H1 from the projected body while
+  keeping the file's bytes, offsets, and frontmatter intact.
+- `src/smartSelection.ts`: the Cmd/Ctrl+A ladder (line, heading, body).
+- `src/completedTasks.ts`: reads the Completed Tasks plugin's settings without
+  depending on it.
+- `tests/reliability.cjs`: fork regression tests; run with `npm test`.
+
+**Fork-only settings** (in `src/settings.ts` and the settings tab):
+
+- `hideDailyNoteH1`, `hideHeaderSeparator`, `hideTodayBackground`
+- `openNoteAction` (`button` / `hidden` / `heading`)
+- `goToNotePosition` (`top` / `bottom` / `auto`)
+
+**Fork-only behavior.**
+
+- A day heading opens its note when **Open note control** is set to the heading,
+  including Ctrl/Cmd-click for a new tab.
+- Cmd/Ctrl+A expands the selection; `src/view.ts` and `src/day.ts` forward it to
+  the focused entry.
+- Completed Tasks sorting runs on its own interval and when an edited entry
+  loses focus.
+- Saves retry with backoff, an external edit produces a conflict copy instead of
+  overwriting the note, and failed editor reads are held rather than saved as
+  empty.
+- A daily-note config change rebuilds the view after flushing, instead of
+  retargeting dirty sections in place.
+- `styles.css` carries the fork's card, header, today, and backlink styling.
+  Keep those rules when resolving style conflicts.
+
+## Bringing in upstream changes
+
+```bash
+git fetch upstream --no-tags
+git switch -c feature/upstream-<version> origin/dev
+git merge upstream/main
+```
+
+Resolve conflicts in favor of this fork's identity and the behavior above, then:
+
+1. Run `npm test`, `npm run typecheck`, `npm run lint`, and `npm run build`.
+2. Check that `manifest.json` still says `journal-view-wren` and that the view
+   types in `src/view.ts` and `src/statisticsView.ts` still end in `-wren`.
+3. Re-check the fork-only settings in the settings tab and customization modal.
+4. Update `versions.json` only when the fork's own version changes.
+5. Note any upstream behavior that the fork deliberately replaces, so the next
+   merge does not silently reintroduce it.
 
 ## Preparing a release
 
@@ -87,8 +175,9 @@ When the user asks to prepare a release:
   only the feature and fix pull requests intended for the release. Prepare the
   release on `dev`, not on a feature branch or `main`.
 - On `dev`, update all version files with
-  `npm version <version> --no-git-tag-version`. Run `npm run typecheck` and
-  `npm run build`, then commit and push the version bump to `dev`.
+  `npm version <version> --no-git-tag-version`. Run `npm test`, `npm run typecheck`,
+  `npm run lint`, and `npm run build`, then commit and push the version bump to
+  `dev`.
 - Open one pull request from `dev` into `main`. That release pull request must
   contain both the accumulated user-visible changes and their version bump.
   Describe the changes and include only verification that was actually
