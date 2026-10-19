@@ -1,6 +1,6 @@
 import { App, TFile, getAllTags } from "obsidian";
 import type { CachedMetadata } from "obsidian";
-import { keyAfter, keyBefore } from "./noteIndex";
+import { keyAfter, keyBefore, keysAround } from "./noteIndex";
 import type { DailyNoteIndex, OrderedDayIndex } from "./noteIndex";
 import type {
 	JournalFilterMode,
@@ -266,16 +266,9 @@ export class FilteredDailyNoteIndex implements OrderedDayIndex {
 		return this.list().filter((candidate) => candidate < key);
 	}
 
-	keysFrom(key: string, direction: -1 | 1): string[] {
-		if (this.signature === "[]") return this.base.keysFrom(key, direction);
-		const list = this.list();
-		if (direction > 0) {
-			return [...list.filter((candidate) => candidate > key), ...list.filter((candidate) => candidate < key)];
-		}
-		return [
-			...list.filter((candidate) => candidate < key).reverse(),
-			...list.filter((candidate) => candidate > key).reverse(),
-		];
+	keysAround(key: string, direction: -1 | 1): string[] {
+		if (this.signature === "[]") return this.base.keysAround(key, direction);
+		return keysAround(this.list(), key, direction);
 	}
 
 	private addMatchingPath(path: string, key: string): void {
