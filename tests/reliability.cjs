@@ -224,12 +224,12 @@ test('unfiltered index delegates navigation without duplicate scans or membershi
   const keys = ['2026-01-01', '2026-01-03'];
   const base = {version: 1, ensureCurrent() {}, size: 2, has: key => keys.includes(key),
     changedSince: () => null,
-    range: () => ({first: keys[0], last: keys[1]}), next: () => keys[1], prev: () => keys[0], keysFrom: () => keys};
+    range: () => ({first: keys[0], last: keys[1]}), next: () => keys[1], prev: () => keys[0], keysAround: () => keys};
   const index = new FilteredDailyNoteIndex({vault: {getMarkdownFiles() {scans++; return []}}}, base, () => []);
   index.ensureCurrent(); base.version++; index.ensureCurrent();
   assert.equal(index.has(keys[0]), true); assert.equal(index.size, 2);
   assert.deepEqual(index.range(), base.range()); assert.equal(index.next(keys[0]), keys[1]);
-  assert.equal(index.prev(keys[1]), keys[0]); assert.deepEqual(index.keysFrom(keys[0], 1), keys);
+  assert.equal(index.prev(keys[1]), keys[0]); assert.deepEqual(index.keysAround(keys[0], 1), keys);
   assert.equal(scans, 0);
   for (const collection of ['keys', 'matchingPaths', 'pathKeys', 'matchingCounts']) assert.equal(index[collection].size, 0);
 });

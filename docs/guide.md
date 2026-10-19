@@ -2,6 +2,10 @@
 
 How Journal View works in detail. For an overview, see the [README](../README.md).
 
+This fork follows upstream's version numbers: a Wren release named 1.4.4 contains
+everything in RUverse's Journal View 1.4.4 plus this fork's own changes, so the two
+can always be compared at a glance.
+
 - [Navigation](#navigation)
 - [Settings](#settings)
 - [Several notes a day](#several-notes-a-day)
