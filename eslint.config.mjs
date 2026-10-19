@@ -11,6 +11,7 @@ export default defineConfig(
 		"package-lock.json",
 		"version-bump.mjs",
 		"versions.json",
+		"tests/*.cjs",
 	]),
 	{
 		languageOptions: {

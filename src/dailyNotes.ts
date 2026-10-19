@@ -226,6 +226,35 @@ export class DailyNoteResolver {
 		throw new Error(`No free name for a new note at ${preferred}`);
 	}
 
+	/**
+	 * Creates the day's one note and reports the template text used, so the
+	 * caller can distinguish its own creation from a note another writer made
+	 * in the same instant. Null means an existing or competing file was found.
+	 */
+	async createForEdit(
+		date: Moment,
+		preferred = this.pathFor(date),
+	): Promise<{ file: TFile; createdContent: string | null }> {
+		const existing = this.app.vault.getAbstractFileByPath(preferred);
+		if (existing instanceof TFile) return { file: existing, createdContent: null };
+
+		await this.ensureFolder(preferred);
+		const template = await this.readTemplate();
+		const body = this.fillTemplate(
+			template,
+			date,
+			preferred.slice(preferred.lastIndexOf("/") + 1, -".md".length),
+		);
+		try {
+			return { file: await this.app.vault.create(preferred, body), createdContent: body };
+		} catch (error) {
+			// A competing writer won the race; never adopt its body as ours.
+			const raced = this.app.vault.getAbstractFileByPath(preferred);
+			if (raced instanceof TFile) return { file: raced, createdContent: null };
+			throw error;
+		}
+	}
+
 	private async ensureFolder(filePath: string): Promise<void> {
 		const parent = filePath.split("/").slice(0, -1).join("/");
 		if (!parent) return;

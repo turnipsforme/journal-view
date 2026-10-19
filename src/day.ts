@@ -7,6 +7,7 @@ import { createMoment } from "./moment";
 import type { Moment } from "./moment";
 import { INVALID_TITLE_CHARACTERS, renderNoteLabel } from "./noteLabel";
 import type { NoteLabel } from "./noteLabel";
+import type { NavigationPlacement } from "./navigation";
 
 /** The bits of the journal view a day needs to talk to. Its page previews hang off the view. */
 export interface DayHost extends HoverParent {
@@ -136,9 +137,47 @@ export class DaySection implements EntryHost, DayFilesHost {
 		// rather than `:has()`, which makes every hover re-match the whole card.
 		this.cardEl.addEventListener("mouseover", () => this.syncLeadHover());
 		this.cardEl.addEventListener("mouseleave", () => this.syncLeadHover());
+		this.titleEl.addEventListener("click", (event) => this.onTitleClick(event));
+		this.titleEl.addEventListener("keydown", (event) => this.onTitleKeydown(event));
 
 		this.syncEntries();
 		this.refreshFiles();
+	}
+
+	/** The header opens the note under it when the reader asked it to. */
+	private onTitleClick(event: MouseEvent): void {
+		if (!this.canOpenFromTitle()) return;
+		event.preventDefault();
+		event.stopPropagation();
+		void this.lead.openInTab(event.ctrlKey || event.metaKey);
+	}
+
+	private onTitleKeydown(event: KeyboardEvent): void {
+		if (event.key !== "Enter" || !this.canOpenFromTitle()) return;
+		event.preventDefault();
+		event.stopPropagation();
+		void this.lead.openInTab(event.ctrlKey || event.metaKey);
+	}
+
+	private canOpenFromTitle(): boolean {
+		return this.exists && this.host.plugin.settings.openNoteAction === "heading" &&
+			this.host.plugin.settings.headerStyle !== "hidden";
+	}
+
+	/** Applies the header's tooltip and, when it opens the note, its link affordances. */
+	syncHeaderSettings(): void {
+		const lead = this.lead;
+		const clickable = this.canOpenFromTitle();
+		this.titleEl.toggleClass("journal-day-title-clickable", clickable);
+		if (clickable) {
+			this.titleEl.setAttribute("role", "link");
+			this.titleEl.setAttribute("tabindex", "0");
+			setTooltip(this.titleEl, `Open note: ${lead.path}`, { placement: "right" });
+			return;
+		}
+		this.titleEl.removeAttribute("role");
+		this.titleEl.removeAttribute("tabindex");
+		setTooltip(this.titleEl, lead.path, { placement: "right" });
 	}
 
 	get app(): App {
@@ -339,7 +378,7 @@ export class DaySection implements EntryHost, DayFilesHost {
 		for (const entry of this.entries) entry.el.toggleClass("journal-entry-lead", entry === lead);
 		this.syncFocusClasses();
 		this.actionsEl.empty();
-		setTooltip(this.titleEl, lead.path, { placement: "right" });
+		this.syncHeaderSettings();
 		lead.renderActions(this.actionsEl);
 		const label = this.labelFor(lead, false);
 		renderNoteLabel(this.noteLabelEl, label ?? { text: null, title: null }, this.retitler(lead));
@@ -520,12 +559,24 @@ export class DaySection implements EntryHost, DayFilesHost {
 	 * writing continues, or in the first. Returns false when the guarded
 	 * editor mount failed.
 	 */
-	focusEditor(atEnd = false, target?: NoteEntry): boolean {
+	focusEditor(atEnd?: NavigationPlacement, target?: NoteEntry): boolean {
 		const shown = this.entries.filter((entry) => !entry.isHidden);
 		const entry =
 			(target && shown.includes(target) ? target : atEnd ? shown[shown.length - 1] : shown[0]) ??
 			this.entries[0];
 		return entry.focusEditor(atEnd);
+	}
+
+	/** Expands the focused note's selection, when one of this day's notes owns it. */
+	expandSelection(): boolean {
+		return this.entries.some((entry) => entry.expandSelection());
+	}
+
+	/** Gives the note the reader last wrote in a chance to reorder its completed tasks. */
+	sortCompletedTasks(force = false): boolean {
+		const focused = this.entries.find((entry) => entry.isEditorFocused);
+		if (focused) return focused.sortCompletedTasks(force);
+		return false;
 	}
 
 	async flush(commitMetadataDraft = false): Promise<void> {

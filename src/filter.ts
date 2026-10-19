@@ -145,10 +145,18 @@ export class FilteredDailyNoteIndex implements OrderedDayIndex {
 	rebuild(): void {
 		this.base.ensureCurrent();
 		this.keys.clear();
+		this.sorted = [];
 		this.matchingPaths.clear();
 		this.pathKeys.clear();
 		this.matchingCounts.clear();
 		const rules = this.getRules();
+		this.signature = JSON.stringify(rules);
+		this.baseVersion = this.base.version;
+		this.sortedDirty = true;
+		this.version++;
+		// With no rules, the base index already answers every query. Avoid a
+		// second vault scan and four collections of identical membership data.
+		if (!rules.length) return;
 		const config = this.base.resolvedConfig();
 		for (const file of this.app.vault.getMarkdownFiles()) {
 			const key = this.base.keyForPath(file.path, config);
@@ -182,6 +190,7 @@ export class FilteredDailyNoteIndex implements OrderedDayIndex {
 	/** Re-evaluates one note after Obsidian has refreshed its metadata cache. */
 	handleMetadataChange(file: TFile): boolean {
 		this.ensureCurrent();
+		if (this.signature === "[]") return false;
 		return this.place(file.path);
 	}
 
@@ -220,37 +229,45 @@ export class FilteredDailyNoteIndex implements OrderedDayIndex {
 	}
 
 	has(key: string): boolean {
+		if (this.signature === "[]") return this.base.has(key);
 		return this.keys.has(key);
 	}
 
 	/** True when this daily note passes the rules; a day is included when any of its notes does. */
 	matchesPath(path: string): boolean {
+		if (this.signature === "[]") return this.base.keyForPath(path) !== null;
 		return this.matchingPaths.has(path);
 	}
 
 	get size(): number {
+		if (this.signature === "[]") return this.base.size;
 		return this.keys.size;
 	}
 
 	range(): { first: string; last: string } | null {
+		if (this.signature === "[]") return this.base.range();
 		const list = this.list();
 		return list.length ? { first: list[0], last: list[list.length - 1] } : null;
 	}
 
 	next(key: string): string | null {
+		if (this.signature === "[]") return this.base.next(key);
 		return keyAfter(this.list(), key);
 	}
 
 	prev(key: string): string | null {
+		if (this.signature === "[]") return this.base.prev(key);
 		return keyBefore(this.list(), key);
 	}
 
 	/** Every included day strictly before `key`, in date order. */
 	keysBefore(key: string): string[] {
+		if (this.signature === "[]") return this.base.keys().filter((candidate) => candidate < key);
 		return this.list().filter((candidate) => candidate < key);
 	}
 
 	keysFrom(key: string, direction: -1 | 1): string[] {
+		if (this.signature === "[]") return this.base.keysFrom(key, direction);
 		const list = this.list();
 		if (direction > 0) {
 			return [...list.filter((candidate) => candidate > key), ...list.filter((candidate) => candidate < key)];

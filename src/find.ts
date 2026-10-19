@@ -10,6 +10,7 @@ import type { FindPosition } from "./findResults";
 import { DAY_KEY_FORMAT } from "./noteIndex";
 import { createMoment } from "./moment";
 import type { Moment } from "./moment";
+import { projectNoteBody } from "./noteProjection";
 
 /** Time a search spends counting before it lets the window paint and take input (ms). */
 const SLICE_BUDGET = 8;
@@ -418,6 +419,11 @@ export class JournalFind {
 		}
 	}
 
+	/** Corpus text in the same shape the journal shows, so offsets stay aligned. */
+	private shownBody(text: string): string {
+		return projectNoteBody(text, this.host.plugin.settings.hideDailyNoteH1).editorBody;
+	}
+
 	/**
 	 * Counts the notes of every day that is not loaded, in walk order. Notes
 	 * already read are counted in slices of a few milliseconds; the rest are
@@ -447,7 +453,7 @@ export class JournalFind {
 						deadline = performance.now() + SLICE_BUDGET;
 						if (this.live.has(path)) continue;
 					}
-					const count = text === null ? 0 : countMatches(text, pass.expression);
+					const count = text === null ? 0 : countMatches(this.shownBody(text), pass.expression);
 					this.results.set(key, path, order, count, pass.generation);
 				}
 			}
@@ -508,7 +514,7 @@ export class JournalFind {
 		const text = await plugin.findCorpus.read(file);
 		if (pass !== this.pass || this.live.has(path)) return;
 		const order = plugin.index.pathsFor(key).indexOf(path);
-		const count = text === null ? 0 : countMatches(text, pass.expression);
+		const count = text === null ? 0 : countMatches(this.shownBody(text), pass.expression);
 		this.results.set(key, path, order, count, pass.generation);
 		this.syncSelection();
 		this.progress(pass);

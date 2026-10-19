@@ -5,6 +5,11 @@ import { Decoration, EditorView } from "@codemirror/view";
 import type { DecorationSet } from "@codemirror/view";
 import type { FindRange } from "./findText";
 
+export interface TextSelection {
+	anchor: number;
+	head: number;
+}
+
 export interface JournalEditorOptions {
 	app: App;
 	leaf: WorkspaceLeaf;
@@ -15,7 +20,7 @@ export interface JournalEditorOptions {
 	/** The note being edited, when it already exists. Used for link resolution. */
 	file: TFile | null;
 	/** Rebuilds the complete note, frontmatter included, around the editor's body. */
-	noteContent: (body: string) => string;
+	noteContent: (body: string) => string | null;
 	onChange: () => void;
 	/** Called after the editor has completed its first real layout pass. */
 	onReady: () => void;
@@ -26,8 +31,12 @@ export interface JournalEditorOptions {
 
 export interface JournalEditor {
 	getValue(): string;
+	/** A failed internal read must never be submitted as an empty edit. */
+	tryGetValue(): string | null;
+	getSelectionRange(): TextSelection | null;
+	setSelectionRange(selection: TextSelection): void;
 	/** Replaces the contents; `preserveSelection` is for a clean external update. */
-	setValue(value: string, preserveSelection?: boolean): void;
+	setValue(value: string, preserveSelection?: boolean): boolean;
 	setFile(file: TFile | null): void;
 	focus(): void;
 	hasFocus(): boolean;
@@ -327,13 +336,14 @@ function resolveEditorCtor(app: App): EditorCtor | null {
 	if (cachedCtor !== undefined) return cachedCtor;
 
 	cachedCtor = null;
+	let probe: Record<string, unknown> | null = null;
 	try {
 		const factory = app.embedRegistry?.embedByExtension?.["md"];
 		if (!factory) return cachedCtor;
 
 		const candidate = factory({ app, containerEl: createDiv() }, null, "");
 		if (!candidate || typeof candidate !== "object") return cachedCtor;
-		const probe = candidate as Record<string, unknown>;
+		probe = candidate as Record<string, unknown>;
 		probe.editable = true;
 		if (typeof probe.showEditor === "function") probe.showEditor.call(probe);
 		const editMode = probe.editMode;
@@ -345,10 +355,15 @@ function resolveEditorCtor(app: App): EditorCtor | null {
 				if (typeof ctor === "function") cachedCtor = ctor as EditorCtor;
 			}
 		}
-		if (typeof probe.unload === "function") probe.unload.call(probe);
 	} catch (error) {
 		console.warn("Journal View: Obsidian's embedded editor is unavailable, using the plain editor", error);
 		cachedCtor = null;
+	} finally {
+		try {
+			if (typeof probe?.unload === "function") probe.unload.call(probe);
+		} catch (error) {
+			console.warn("Journal View: could not release the editor probe", error);
+		}
 	}
 	return cachedCtor;
 }
@@ -363,11 +378,13 @@ class RichEditor implements JournalEditor {
 	private readyFrame = 0;
 	private readyReported = false;
 	private destroyed = false;
+	private lastReadableValue: string;
 
 	constructor(
 		private options: JournalEditorOptions,
 		Ctor: EditorCtor,
 	) {
+		this.lastReadableValue = options.value;
 		this.owner = {
 			app: options.app,
 			file: options.file,
@@ -414,10 +431,19 @@ class RichEditor implements JournalEditor {
 		// that lifecycle unless we do it here. In particular, live-preview embeds
 		// only register their metadata-change listeners once their component tree
 		// is loaded.
-		instance.load?.();
-		this.instance.set?.(options.value, true);
-		this.dropScrollRequest();
-		this.reportInitialLayout();
+		try {
+			if (typeof instance.set !== "function" ||
+				(typeof instance.get !== "function" && typeof instance.editor?.getValue !== "function")) {
+				throw new Error("The embedded editor does not expose text access");
+			}
+			instance.load?.();
+			instance.set(options.value, true);
+			this.dropScrollRequest();
+			this.reportInitialLayout();
+		} catch (error) {
+			this.destroy();
+			throw error;
+		}
 
 		this.focusIn = (event) => {
 			if (focusStayedInside(options.container, event)) return;
@@ -489,27 +515,51 @@ class RichEditor implements JournalEditor {
 
 	private readValue(): string | null {
 		try {
-			if (typeof this.instance?.get === "function") return this.instance.get() ?? "";
-			return this.instance?.editor?.getValue?.() ?? "";
+			const value = typeof this.instance?.get === "function"
+				? this.instance.get()
+				: this.instance?.editor?.getValue?.();
+			if (typeof value === "string") return (this.lastReadableValue = value);
 		} catch (error) {
 			console.warn("Journal View: could not read editor contents", error);
-			return null;
 		}
+		try {
+			const doc = this.instance?.editor?.cm?.state?.doc;
+			if (doc) return (this.lastReadableValue = doc.toString());
+		} catch { /* keep the last reliable snapshot for display, never for saving */ }
+		return null;
 	}
 
 	getValue(): string {
-		return this.readValue() ?? "";
+		return this.readValue() ?? this.lastReadableValue;
 	}
 
-	setValue(value: string, preserveSelection = false): void {
+	tryGetValue(): string | null {
+		return this.readValue();
+	}
+
+	getSelectionRange(): TextSelection | null {
+		const range = this.instance?.editor?.cm?.state?.selection.main;
+		return range ? { anchor: range.anchor, head: range.head } : null;
+	}
+
+	setSelectionRange(selection: TextSelection): void {
+		this.instance?.editor?.cm?.dispatch?.({ selection });
+		this.dropScrollRequest();
+	}
+
+	setValue(value: string, preserveSelection = false): boolean {
 		try {
 			// Obsidian's non-clearing path applies the smallest document change,
 			// mapping the selection through it. Template offers retain the clearing
 			// behavior they have always used; only external updates ask to preserve.
-			this.instance?.set?.(value, !preserveSelection);
+			if (typeof this.instance?.set !== "function") return false;
+			this.instance.set(value, !preserveSelection);
+			this.lastReadableValue = value;
 			this.dropScrollRequest();
+			return true;
 		} catch (error) {
 			console.warn("Journal View: could not update editor contents", error);
+			return false;
 		}
 	}
 
@@ -558,7 +608,8 @@ class RichEditor implements JournalEditor {
 
 	placeCursorAtEnd(reveal = false): void {
 		try {
-			this.instance?.editor?.cm?.dispatch?.({ selection: { anchor: this.getValue().length } });
+			const cm = this.instance?.editor?.cm;
+			cm?.dispatch?.({ selection: { anchor: cm.state?.doc.length ?? this.getValue().length } });
 			// A cursor the reader is meant to carry on typing at is worth the
 			// scroll; one placed under them - a template offer - is not.
 			if (reveal) this.revealCursor();
@@ -652,8 +703,8 @@ class RichEditor implements JournalEditor {
 		this.cancelWorkspaceContent();
 		if (this.readyFrame) window.cancelAnimationFrame(this.readyFrame);
 		this.readyFrame = 0;
-		this.options.container.removeEventListener("focusin", this.focusIn);
-		this.options.container.removeEventListener("focusout", this.focusOut);
+		if (this.focusIn) this.options.container.removeEventListener("focusin", this.focusIn);
+		if (this.focusOut) this.options.container.removeEventListener("focusout", this.focusOut);
 		try {
 			this.instance?.destroy?.();
 		} catch (error) {
@@ -712,8 +763,21 @@ class PlainEditor implements JournalEditor {
 		return this.textarea.value;
 	}
 
-	setValue(value: string, preserveSelection = false): void {
-		if (this.textarea.value === value) return;
+	tryGetValue(): string {
+		return this.textarea.value;
+	}
+
+	getSelectionRange(): TextSelection {
+		const { selectionStart: start, selectionEnd: end, selectionDirection } = this.textarea;
+		return selectionDirection === "backward" ? { anchor: end, head: start } : { anchor: start, head: end };
+	}
+
+	setSelectionRange({ anchor, head }: TextSelection): void {
+		this.textarea.setSelectionRange(Math.min(anchor, head), Math.max(anchor, head), head < anchor ? "backward" : "forward");
+	}
+
+	setValue(value: string, preserveSelection = false): boolean {
+		if (this.textarea.value === value) return true;
 		const selectionStart = this.textarea.selectionStart;
 		const selectionEnd = this.textarea.selectionEnd;
 		this.textarea.value = value;
@@ -721,6 +785,7 @@ class PlainEditor implements JournalEditor {
 			this.textarea.setSelectionRange(selectionStart, selectionEnd);
 		}
 		this.autoGrow();
+		return true;
 	}
 
 	placeCursorAtEnd(reveal = false): void {
@@ -731,11 +796,15 @@ class PlainEditor implements JournalEditor {
 
 	/**
 	 * The textarea grows to its full content and never scrolls itself, so its
-	 * bottom edge is where a cursor at the end sits. Anywhere else in the text
-	 * has no box of its own to bring on screen, and is left alone.
+	 * edges locate a cursor at the start or end. Positions in the middle have
+	 * no box of their own to bring on screen, and are left alone.
 	 */
 	revealCursor(): void {
 		const end = this.textarea.value.length;
+		if (this.textarea.selectionStart === 0 && this.textarea.selectionEnd === 0) {
+			this.textarea.scrollIntoView({ block: "start" });
+			return;
+		}
 		if (this.textarea.selectionStart !== end || this.textarea.selectionEnd !== end) return;
 		this.textarea.scrollIntoView({ block: "end" });
 	}

@@ -14,6 +14,8 @@ export const LEGACY_FULL_HEADER_FORMAT = "dddd, D MMMM YYYY";
 
 export type DaySortDirection = "ascending" | "descending";
 export type DailyHeaderStyle = "subtle" | "h1" | "hidden";
+export type OpenNoteAction = "button" | "hidden" | "heading";
+export type GoToNotePosition = "top" | "bottom" | "auto";
 /** Which of a file's dates puts it under a day. */
 export type DayFilesDate = "created" | "modified" | "both";
 /**
@@ -60,6 +62,8 @@ export interface JournalViewSettings {
 	richEditor: boolean;
 	/** Put the cursor in today's note when the view opens. */
 	focusTodayOnOpen: boolean;
+	/** Cursor and scroll destination for the go-to-day commands. */
+	goToNotePosition: GoToNotePosition;
 	/** Open or reveal the journal after Obsidian restores the workspace. */
 	openJournalOnStartup: boolean;
 	/** Show only days that have a note (today always shows). */
@@ -70,6 +74,14 @@ export interface JournalViewSettings {
 	showTags: boolean;
 	/** Frontmatter property names shown above each existing note's body. */
 	displayProperties: string[];
+	/** Hide a leading level-one heading while leaving it in the daily note file. */
+	hideDailyNoteH1: boolean;
+	/** How readers open a daily note from its journal header. */
+	openNoteAction: OpenNoteAction;
+	/** Hide the rule between a daily header and its note body. */
+	hideHeaderSeparator: boolean;
+	/** Highlight today with its title colour instead of a shaded card. */
+	hideTodayBackground: boolean;
 	/** Chronological direction in which days are laid out. */
 	daySortDirection: DaySortDirection;
 	/** List the files from each day at the bottom of the day. */
@@ -100,11 +112,16 @@ export const DEFAULT_SETTINGS: JournalViewSettings = {
 	maxLoadedDays: 60,
 	richEditor: true,
 	focusTodayOnOpen: true,
+	goToNotePosition: "bottom",
 	openJournalOnStartup: false,
 	hideEmptyDays: true,
 	filterRules: [],
 	showTags: false,
 	displayProperties: [],
+	hideDailyNoteH1: false,
+	openNoteAction: "button",
+	hideHeaderSeparator: false,
+	hideTodayBackground: false,
 	daySortDirection: "ascending",
 	showDayFiles: false,
 	dayFilesDate: "created",
@@ -133,6 +150,9 @@ type ToggleSettingKey =
 	| "focusTodayOnOpen"
 	| "openJournalOnStartup"
 	| "hideEmptyDays"
+	| "hideDailyNoteH1"
+	| "hideHeaderSeparator"
+	| "hideTodayBackground"
 	| "showMonthSeparators"
 	| "groupDaysByYear"
 	| "showDayFiles"
@@ -183,6 +203,11 @@ interface JournalSliderSetting extends JournalSettingBase {
 type JournalDropdownControl =
 	| {
 			type: "dropdown";
+			key: "goToNotePosition";
+			options: Record<GoToNotePosition, string>;
+	  }
+	| {
+			type: "dropdown";
 			key: "daySortDirection";
 			options: Record<DaySortDirection, string>;
 	  }
@@ -190,6 +215,11 @@ type JournalDropdownControl =
 			type: "dropdown";
 			key: "headerStyle";
 			options: Record<DailyHeaderStyle, string>;
+	  }
+	| {
+			type: "dropdown";
+			key: "openNoteAction";
+			options: Record<OpenNoteAction, string>;
 	  }
 	| {
 			type: "dropdown";
@@ -347,6 +377,29 @@ export class JournalViewSettingTab extends PluginSettingTab {
 						},
 					},
 					{
+						name: "Open note control",
+						desc: "Keep the open-note button, remove it, or open the note by clicking its daily heading.",
+						control: {
+							type: "dropdown",
+							key: "openNoteAction",
+							options: {
+								button: "Show button (default)",
+								hidden: "Hide button",
+								heading: "Use clickable heading",
+							},
+						},
+					},
+					{
+						name: "Hide today's background",
+						desc: "Remove the shaded box around today and use your theme's bold or italic text colour for its date heading.",
+						control: { type: "toggle", key: "hideTodayBackground" },
+					},
+					{
+						name: "Hide header separator",
+						desc: "Remove the line between each daily heading and its note contents.",
+						control: { type: "toggle", key: "hideHeaderSeparator" },
+					},
+					{
 						name: "Group days by year",
 						desc: "Show a centered year heading when consecutive visible days cross a year boundary.",
 						control: { type: "toggle", key: "groupDaysByYear" },
@@ -374,12 +427,26 @@ export class JournalViewSettingTab extends PluginSettingTab {
 						control: { type: "toggle", key: "focusTodayOnOpen" },
 					},
 					{
+						name: "Go to note position",
+						desc: "Choose where Go to today, yesterday, tomorrow, and the toolbar's Today button land. Auto goes to the top for 20 or more lines in the visible note body, otherwise the bottom. Counts blank lines, but not visual line wrapping.",
+						control: {
+							type: "dropdown",
+							key: "goToNotePosition",
+							options: { top: "Top", bottom: "Bottom", auto: "Auto (20+ lines: top)" },
+						},
+					},
+					{
 						name: "Only show days that have a note",
 						desc:
 							"Days with no note are skipped entirely, so the journal jumps from one note to the next. " +
 							"Today is always shown, and so are days with files while files from each day are shown. " +
 							"When off, every day appears, faded until you type in it.",
 						control: { type: "toggle", key: "hideEmptyDays" },
+					},
+					{
+						name: "Hide note H1 heading",
+						desc: "Hide a leading H1 from each entry in the journal while keeping it in the daily note file.",
+						control: { type: "toggle", key: "hideDailyNoteH1" },
 					},
 				],
 			},
@@ -543,6 +610,18 @@ export class JournalViewSettingTab extends PluginSettingTab {
 					changed = true;
 				}
 				break;
+			case "goToNotePosition":
+				if (value === "top" || value === "bottom" || value === "auto") {
+					this.plugin.settings[key] = value;
+					changed = true;
+				}
+				break;
+			case "openNoteAction":
+				if (value === "button" || value === "hidden" || value === "heading") {
+					this.plugin.settings[key] = value;
+					changed = true;
+				}
+				break;
 			case "yearProgress":
 				if (isYearProgressMode(value)) {
 					this.plugin.settings[key] = value;
@@ -554,6 +633,9 @@ export class JournalViewSettingTab extends PluginSettingTab {
 			case "focusTodayOnOpen":
 			case "openJournalOnStartup":
 			case "hideEmptyDays":
+			case "hideDailyNoteH1":
+			case "hideHeaderSeparator":
+			case "hideTodayBackground":
 			case "showMonthSeparators":
 			case "groupDaysByYear":
 			case "showDayFiles":

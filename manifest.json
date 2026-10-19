@@ -1,10 +1,10 @@
 {
-	"id": "journal-view",
-	"name": "Journal View",
-	"version": "1.4.3",
+	"id": "journal-view-wren",
+	"name": "Journal View (Wren)",
+	"version": "2.0.0",
 	"minAppVersion": "1.7.2",
-	"description": "Turn your daily notes into one continuous, editable journal—scroll through time, jump to any date, and write without leaving the view.",
-	"author": "RUverse",
-	"authorUrl": "https://github.com/RUverse",
+	"description": "A Reflect-inspired fork of Journal View with an editable daily-note timeline and custom styling.",
+	"author": "Wren",
+	"authorUrl": "https://github.com/turnipsforme",
 	"isDesktopOnly": false
 }

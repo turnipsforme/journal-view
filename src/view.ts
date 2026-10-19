@@ -19,8 +19,11 @@ import type { FindRange } from "./findText";
 import { createMoment } from "./moment";
 import type { Moment } from "./moment";
 import { listenForReaderScrollIntent } from "./readerInput";
+import { completedTasksPlugin } from "./completedTasks";
+import { navigationPlacement } from "./navigation";
+import type { NavigationPlacement } from "./navigation";
 
-export const VIEW_TYPE_JOURNAL = "journal-view";
+export const VIEW_TYPE_JOURNAL = "journal-view-wren";
 
 /** Days built on either side of today when the view first opens. */
 const INITIAL_RADIUS = 7;
@@ -106,13 +109,15 @@ export class JournalView extends ItemView implements DayHost, AnchorHost, Editor
 	/** Delayed editor focus used only by the initial open on today. */
 	private initialFocusTimer = 0;
 	/** Cursor placement requested while the pane still had no measurable height. */
-	private focusOnFirstResizeAtEnd: boolean | null = null;
+	private focusOnFirstResizeAtEnd: NavigationPlacement | undefined | null = null;
 	/** The note that placement is for, when navigation named one. */
 	private focusOnFirstResizePath: string | undefined;
 	/** Command target kept visible only until its editor receives focus. */
 	private commandTargetOffset: number | null = null;
 	/** Invalidates delayed command navigation when a newer destination takes over. */
 	private commandNavigationToken = 0;
+	private lastTaskSort = Date.now();
+	private lastEditedDay: DaySection | null = null;
 	/** True while a pointer is held down in the scroller (scrollbar, selection). */
 	private pointerHeld = false;
 	/** Scroll position and pace, used to keep editor work out of a gesture. */
@@ -127,6 +132,7 @@ export class JournalView extends ItemView implements DayHost, AnchorHost, Editor
 	/** False until the view has centred on today in a laid-out pane. */
 	private centered = false;
 	private ready = false;
+	private closed = false;
 	/** Offset of the day the current window was built around. */
 	private origin = 0;
 	/** A settings change that arrived while a build was in flight. */
@@ -139,7 +145,7 @@ export class JournalView extends ItemView implements DayHost, AnchorHost, Editor
 	private indexVersion = -1;
 	private filteredIndexVersion = -1;
 	private dayFilesVersion = -1;
-	private initialTarget?: { date: Moment; focusAtEnd: boolean; revealThroughFilters: boolean; path?: string };
+	private initialTarget?: { date: Moment; focusAtEnd: NavigationPlacement | undefined; revealThroughFilters: boolean; path?: string };
 
 	constructor(
 		leaf: WorkspaceLeaf,
@@ -161,6 +167,9 @@ export class JournalView extends ItemView implements DayHost, AnchorHost, Editor
 		this.scope.register(["Mod"], "f", () => {
 			this.showFind();
 			return false;
+		});
+		this.scope.register(["Mod"], "a", () => {
+			if (this.sections.some((section) => section.expandSelection())) return false;
 		});
 		this.initialTarget = plugin.consumeInitialTarget(leaf);
 		// Opening a note (from a day header, or a link inside a day) must not
@@ -195,6 +204,7 @@ export class JournalView extends ItemView implements DayHost, AnchorHost, Editor
 
 	async onOpen(): Promise<void> {
 		this.containerEl.addClass("journal-view");
+		this.syncDisplaySettings();
 		this.contentEl.empty();
 		this.contentEl.addClass("journal-content");
 
@@ -225,6 +235,14 @@ export class JournalView extends ItemView implements DayHost, AnchorHost, Editor
 		this.registerDomEvent(this.containerEl, "keydown", (event) => this.onKeydown(event), { capture: true });
 		this.registerVaultEvents();
 		this.register(this.plugin.dayFiles.onChanged((keys) => this.onDayFilesChanged(keys)));
+		this.registerInterval(window.setInterval(() => {
+			if (this.app.workspace.getActiveViewOfType(JournalView) !== this) return;
+			const interval = completedTasksPlugin(this.app)?.settings.intervalSeconds ?? 0;
+			if (!Number.isFinite(interval) || interval <= 0 || Date.now() - this.lastTaskSort < interval * 1000) return;
+			this.lastTaskSort = Date.now();
+			const day = this.sections.find((section) => section.hasFocus) ?? this.lastEditedDay;
+			day?.sortCompletedTasks();
+		}, 500));
 
 		const initialTarget = this.initialTarget;
 		this.initialTarget = undefined;
@@ -238,6 +256,9 @@ export class JournalView extends ItemView implements DayHost, AnchorHost, Editor
 	}
 
 	async onClose(): Promise<void> {
+		this.closed = true;
+		this.ready = false;
+		this.epoch++;
 		this.commandNavigationToken++;
 		// Modals hold this view in their callbacks, so they have to go with it.
 		this.picker?.close();
@@ -271,6 +292,7 @@ export class JournalView extends ItemView implements DayHost, AnchorHost, Editor
 		this.initialFocusTimer = 0;
 		this.focusOnFirstResizeAtEnd = null;
 		this.focusOnFirstResizePath = undefined;
+		this.lastEditedDay = null;
 		this.commandTargetOffset = null;
 		window.clearTimeout(this.settleTimer);
 		this.settleTimer = 0;
@@ -292,6 +314,7 @@ export class JournalView extends ItemView implements DayHost, AnchorHost, Editor
 	 * rebuild happens under the reader, and taking their cursor would be theft.
 	 */
 	private async build(around?: Moment, focusToday = false, revealAround = false): Promise<void> {
+		if (this.closed) return;
 		this.ready = false;
 		this.centered = false;
 		const settingsSignature = this.rebuildSettingsSignature();
@@ -411,11 +434,14 @@ export class JournalView extends ItemView implements DayHost, AnchorHost, Editor
 
 	/** Rebuilds everything, e.g. after the daily-note format changed. */
 	async rebuild(around?: Moment, focusToday = false, revealAround = false): Promise<void> {
+		if (this.closed) return;
+		const epoch = ++this.epoch;
 		// Closed for business from here on: flushing is asynchronous, and a
 		// change arriving during it must queue rather than start a second
 		// rebuild alongside this one.
 		this.ready = false;
 		await this.flushAll();
+		if (this.closed || epoch !== this.epoch) return;
 		this.teardown();
 		await this.build(around, focusToday, revealAround);
 	}
@@ -550,7 +576,8 @@ export class JournalView extends ItemView implements DayHost, AnchorHost, Editor
 	private async extend(end: TimelineEnd): Promise<void> {
 		if (!this.ready || this.loading[end] || this.exhausted[end]) return;
 		if (!this.sections.length || this.scrollEl.clientHeight === 0) return;
-		this.loading[end] = true;
+		const loading = this.loading;
+		loading[end] = true;
 		try {
 			const sortStep = this.sortStep();
 			const step = (end === "start" ? -sortStep : sortStep) as -1 | 1;
@@ -596,7 +623,7 @@ export class JournalView extends ItemView implements DayHost, AnchorHost, Editor
 				if (epoch !== this.epoch) return;
 			}
 		} finally {
-			this.loading[end] = false;
+			loading[end] = false;
 		}
 	}
 
@@ -651,6 +678,7 @@ export class JournalView extends ItemView implements DayHost, AnchorHost, Editor
 	}
 
 	private forget(section: DaySection): void {
+		if (this.lastEditedDay === section) this.lastEditedDay = null;
 		this.resizeObserver?.unobserve(section.el);
 		this.unindexDay(section);
 		this.anchoring.forget(section);
@@ -798,6 +826,14 @@ export class JournalView extends ItemView implements DayHost, AnchorHost, Editor
 	}
 
 	private onKeydown(event: KeyboardEvent): void {
+		if (event.defaultPrevented) return;
+		if (event.key.toLowerCase() === "a" && (event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey) {
+			if (this.sections.some((section) => section.expandSelection())) {
+				event.preventDefault();
+				event.stopPropagation();
+			}
+			return;
+		}
 		if (
 			event.key.toLowerCase() !== "f" ||
 			(!event.metaKey && !event.ctrlKey) ||
@@ -894,7 +930,7 @@ export class JournalView extends ItemView implements DayHost, AnchorHost, Editor
 		return distance > this.scrollEl.clientHeight * SMOOTH_CENTER_VIEWPORTS ? "instant" : "smooth";
 	}
 
-	private centerSection(section: DaySection, focus: boolean, atEnd = false, entry?: NoteEntry): void {
+	private centerSection(section: DaySection, focus: boolean, atEnd?: NavigationPlacement, entry?: NoteEntry): void {
 		this.clearPendingFocusCenter();
 		this.centerOn(
 			section,
@@ -904,7 +940,7 @@ export class JournalView extends ItemView implements DayHost, AnchorHost, Editor
 		);
 	}
 
-	private focusAfterCenter(section: DaySection, atEnd: boolean, entry?: NoteEntry): void {
+	private focusAfterCenter(section: DaySection, atEnd?: NavigationPlacement, entry?: NoteEntry): void {
 		// Even an editor that retained focus can have stale offscreen measurements.
 		this.armPendingFocusCenter(section, entry);
 		if (!section.focusEditor(atEnd, entry)) {
@@ -1029,32 +1065,39 @@ export class JournalView extends ItemView implements DayHost, AnchorHost, Editor
 		this.animFrame = window.requestAnimationFrame(step);
 	}
 
-	goToToday(focus = false): void {
+	goToToday(focus = false, atEnd = navigationPlacement(this.plugin.settings.goToNotePosition)): void {
+		if (!this.scrollEl?.isConnected) return;
+		window.clearTimeout(this.initialFocusTimer);
+		this.initialFocusTimer = 0;
 		const navigationToken = ++this.commandNavigationToken;
 		this.setCommandTarget(null);
 		const now = createMoment().startOf("day");
 		const section = this.sectionAt(0);
-		if (!now.isSame(this.today, "day") || !section) {
-			// Midnight has passed, or today was trimmed away after a long
-			// scroll - rebuilding recentres on today directly.
+		if (!now.isSame(this.today, "day") || !section || !this.centered) {
+			// Rebuild if midnight passed, today was trimmed, or the hidden pane
+			// still needs an origin for its first measurable resize.
 			void this.rebuild().then(() => {
 				if (navigationToken !== this.commandNavigationToken) return;
-				const section = this.sectionAt(0);
-				if (focus && section) this.focusAfterCenter(section, true);
+				if (focus) this.focusOriginWhenReady(atEnd);
 			});
 			return;
 		}
 		// Focus only once the animation has arrived: focusing an editor makes
 		// the browser scroll it into view, which would fight the animation.
-		this.centerSection(section, focus, true);
+		this.centerSection(section, focus, atEnd);
 	}
 
 	/**
 	 * Command navigation that keeps the same near-scroll and far-snap behavior
 	 * as Today, aimed at the note at `path` when given.
 	 */
-	goToCommandDate(date: Moment, focus = true, path?: string): void {
-		this.navigateToDate(date, focus, true, true, path);
+	goToCommandDate(
+		date: Moment,
+		focus = true,
+		atEnd = navigationPlacement(this.plugin.settings.goToNotePosition),
+		path?: string,
+	): void {
+		this.navigateToDate(date, focus, atEnd, true, path);
 	}
 
 	/** Opens the calendar, on the day the reader is currently looking at. */
@@ -1141,14 +1184,14 @@ export class JournalView extends ItemView implements DayHost, AnchorHost, Editor
 	 * when there is one. The same predicate is used by every caller so direct
 	 * navigation cannot temporarily reveal a filtered note.
 	 */
-	goToDate(date: Moment, focus = true, path?: string): void {
-		this.navigateToDate(date, focus, false, false, path);
+	goToDate(date: Moment, focus = true, path?: string, atEnd = navigationPlacement(this.plugin.settings.goToNotePosition)): void {
+		this.navigateToDate(date, focus, atEnd, false, path);
 	}
 
 	private navigateToDate(
 		date: Moment,
 		focus: boolean,
-		atEnd: boolean,
+		atEnd: NavigationPlacement,
 		revealThroughFilters: boolean,
 		path?: string,
 	): void {
@@ -1251,7 +1294,7 @@ export class JournalView extends ItemView implements DayHost, AnchorHost, Editor
 		this.find?.sectionsChanged();
 	}
 
-	private focusOriginWhenReady(atEnd = false, path?: string): void {
+	private focusOriginWhenReady(atEnd?: NavigationPlacement, path?: string): void {
 		const section = this.sectionAt(this.origin);
 		if (this.centered && section) {
 			this.focusAfterCenter(section, atEnd, this.aimAt(section, path));
@@ -1514,7 +1557,8 @@ export class JournalView extends ItemView implements DayHost, AnchorHost, Editor
 		this.attachFile(file);
 	}
 
-	onDayContentChanged(_day: DaySection): void {
+	onDayContentChanged(day: DaySection): void {
+		if (day.hasFocus) this.lastEditedDay = day;
 		this.find?.sectionsChanged();
 	}
 
@@ -1558,20 +1602,9 @@ export class JournalView extends ItemView implements DayHost, AnchorHost, Editor
 		// daily-note configuration actually moved.
 		const signature = JSON.stringify(this.plugin.daily.config());
 		if (signature === this.configSignature) return;
-		this.configSignature = signature;
-		this.plugin.index.ensureCurrent();
-		this.plugin.filteredIndex.ensureCurrent();
-		// Lists every loaded day's files again itself, when it has to scan.
-		this.plugin.dayFiles.ensureCurrent();
-		this.syncWithIndex();
-
-		for (const section of this.sections) {
-			for (const entry of section.syncEntries()) void entry.reload().then(() => this.editors.schedule());
-		}
-		this.syncDateSeparators();
-		this.indexPaths();
-		this.editors.schedule();
-		this.find?.sectionsChanged();
+		// Flush while the existing sections still refer to their original files.
+		// Retargeting them first could write a dirty body into the new folder.
+		void this.rebuild(this.visibleDate());
 	}
 
 	/* ------------------------------------------------------------ settings */
@@ -1579,6 +1612,21 @@ export class JournalView extends ItemView implements DayHost, AnchorHost, Editor
 	private syncFilterButton(): void {
 		// Settings can be saved from elsewhere before this view has a toolbar.
 		this.toolbar?.setFilter(isFilterActive(this.plugin.settings));
+	}
+
+	/** Display choices that only need a class on the view, not a rebuild. */
+	private syncDisplaySettings(): void {
+		this.containerEl.toggleClass("journal-today-background-hidden", this.plugin.settings.hideTodayBackground);
+		this.containerEl.toggleClass(
+			"journal-open-note-button-hidden",
+			this.plugin.settings.openNoteAction === "hidden" ||
+				(this.plugin.settings.openNoteAction === "heading" && this.plugin.settings.headerStyle !== "hidden"),
+		);
+		this.containerEl.toggleClass(
+			"journal-header-separator-hidden",
+			this.plugin.settings.hideHeaderSeparator,
+		);
+		for (const section of this.sections) section.syncHeaderSettings();
 	}
 
 	/** Settings whose existing day DOM cannot adopt safely in place. */
@@ -1593,6 +1641,7 @@ export class JournalView extends ItemView implements DayHost, AnchorHost, Editor
 			headerStyle: settings.headerStyle,
 			showMonthSeparators: settings.showMonthSeparators,
 			groupDaysByYear: settings.groupDaysByYear,
+			hideDailyNoteH1: settings.hideDailyNoteH1,
 			richEditor: settings.richEditor,
 			hideEmptyDays: settings.hideEmptyDays,
 			filterRules: settings.filterRules,
@@ -1609,6 +1658,7 @@ export class JournalView extends ItemView implements DayHost, AnchorHost, Editor
 		this.plugin.filteredIndex.ensureCurrent();
 		this.syncWithIndex();
 		this.syncFilterButton();
+		this.syncDisplaySettings();
 		this.yearProgress?.setMode(this.plugin.settings.yearProgress);
 		if (!this.ready) {
 			// A build is in flight against the old values - dropping the change

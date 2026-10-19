@@ -37,20 +37,22 @@ editable timeline. See [README.md](README.md) for an overview and
 
 ## Testing
 
-There are no automated tests: nearly everything here is an interaction against
-Obsidian's own runtime. Verify changes in the throwaway vault instead of a real
-one, and say what you actually exercised rather than what should follow.
+Run `npm test` for deterministic save, conflict, lifecycle, and index regression
+checks. These exercise actual TypeScript methods with mocked vault APIs and timers;
+they do not emulate Obsidian's editor or DOM. Also verify interaction changes in the
+throwaway vault instead of a real one, and say what you actually exercised.
 
 ```bash
-npm run test-vault   # builds/repairs test-vault/, gitignored, build files symlinked in
+npm test             # tests/*.cjs
+npm run test-vault   # builds/repairs test-vault/, gitignored, plugin symlinked in
 ```
 
 Add it in Obsidian once (vault switcher -> Manage vaults -> Open folder as vault),
 after which the `obsidian` CLI can drive it without any clicking:
 
 ```bash
-obsidian vault=test-vault command id=journal-view:open
-obsidian vault=test-vault eval code='app.workspace.getLeavesOfType("journal-view")[0].view.sections.length'
+obsidian vault=test-vault command id=journal-view-wren:open
+obsidian vault=test-vault eval code='app.workspace.getLeavesOfType("journal-view-wren")[0].view.sections.length'
 ```
 
 Two traps, both of which look exactly like the feature being broken:
@@ -100,6 +102,69 @@ journal-wide mosaic of words used for the first time each month.
 `src/datePicker.ts` is the toolbar's calendar: a scrolling column of months that
 hangs off the view rather than being part of it, and moves the journal by date.
 
+## This fork
+
+This repository is Wren's fork of RUverse's Journal View, not the upstream
+plugin. It keeps upstream's architecture and adds the behavior below. When
+upstream and the fork disagree, keep the fork's version unless the user says
+otherwise.
+
+**Identity.** The plugin ID is `journal-view-wren`, the journal view type is
+`journal-view-wren`, and the statistics view type is `journal-statistics-wren`.
+Commands therefore run as `journal-view-wren:open`. Do not copy upstream's
+`journal-view` ID, view types, or command prefix over these.
+
+**Fork-only files.**
+
+- `src/navigation.ts`: `NavigationPlacement` (`top` / `bottom` / `auto`) and the
+  line-count rule behind **Go to note position**.
+- `src/noteProjection.ts`: hides a leading H1 from the projected body while
+  keeping the file's bytes, offsets, and frontmatter intact.
+- `src/smartSelection.ts`: the Cmd/Ctrl+A ladder (line, heading, body).
+- `src/completedTasks.ts`: reads the Completed Tasks plugin's settings without
+  depending on it.
+- `tests/reliability.cjs`: fork regression tests; run with `npm test`.
+
+**Fork-only settings** (in `src/settings.ts` and the settings tab):
+
+- `hideDailyNoteH1`, `hideHeaderSeparator`, `hideTodayBackground`
+- `openNoteAction` (`button` / `hidden` / `heading`)
+- `goToNotePosition` (`top` / `bottom` / `auto`)
+
+**Fork-only behavior.**
+
+- A day heading opens its note when **Open note control** is set to the heading,
+  including Ctrl/Cmd-click for a new tab.
+- Cmd/Ctrl+A expands the selection; `src/view.ts` and `src/day.ts` forward it to
+  the focused entry.
+- Completed Tasks sorting runs on its own interval and when an edited entry
+  loses focus.
+- Saves retry with backoff, an external edit produces a conflict copy instead of
+  overwriting the note, and failed editor reads are held rather than saved as
+  empty.
+- A daily-note config change rebuilds the view after flushing, instead of
+  retargeting dirty sections in place.
+- `styles.css` carries the fork's card, header, today, and backlink styling.
+  Keep those rules when resolving style conflicts.
+
+## Bringing in upstream changes
+
+```bash
+git fetch upstream --no-tags
+git switch -c feature/upstream-<version> origin/dev
+git merge upstream/main
+```
+
+Resolve conflicts in favor of this fork's identity and the behavior above, then:
+
+1. Run `npm test`, `npm run typecheck`, `npm run lint`, and `npm run build`.
+2. Check that `manifest.json` still says `journal-view-wren` and that the view
+   types in `src/view.ts` and `src/statisticsView.ts` still end in `-wren`.
+3. Re-check the fork-only settings in the settings tab and customization modal.
+4. Update `versions.json` only when the fork's own version changes.
+5. Note any upstream behavior that the fork deliberately replaces, so the next
+   merge does not silently reintroduce it.
+
 ## Preparing a release
 
 When the user asks to prepare a release:
@@ -110,7 +175,7 @@ When the user asks to prepare a release:
   only the feature and fix pull requests intended for the release. Prepare the
   release on `dev`, not on a feature branch or `main`.
 - On `dev`, update all version files with
-  `npm version <version> --no-git-tag-version`. Run `npm run typecheck`,
+  `npm version <version> --no-git-tag-version`. Run `npm test`, `npm run typecheck`,
   `npm run lint`, and `npm run build`, then commit and push the version bump to
   `dev`.
 - Open one pull request from `dev` into `main`. That release pull request must

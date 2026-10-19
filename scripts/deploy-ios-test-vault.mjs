@@ -17,7 +17,7 @@ import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const PLUGIN_ID = "journal-view";
+const PLUGIN_ID = "journal-view-wren";
 const DEFAULT_VAULT_NAME = "Journal View Test";
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const root = realpathSync(join(scriptDir, ".."));

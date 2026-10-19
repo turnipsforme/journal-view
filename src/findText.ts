@@ -10,6 +10,12 @@ export function literalExpression(query: string, caseSensitive: boolean): RegExp
 	return new RegExp(escaped, caseSensitive ? "gu" : "giu");
 }
 
+/** Existence checks avoid allocating one range object per occurrence. */
+export function containsLiteral(text: string, query: string, caseSensitive: boolean): boolean {
+	const expression = literalExpression(query, caseSensitive);
+	return expression ? expression.test(text) : false;
+}
+
 /** Returns non-overlapping literal matches in source order. */
 export function findLiteralRanges(text: string, query: string, caseSensitive: boolean): FindRange[] {
 	const expression = literalExpression(query, caseSensitive);

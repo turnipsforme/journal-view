@@ -6,6 +6,7 @@ How Journal View works in detail. For an overview, see the [README](../README.md
 - [Settings](#settings)
 - [Several notes a day](#several-notes-a-day)
 - [File modification history](#file-modification-history)
+- [Editing and completed tasks](#editing-and-completed-tasks)
 - [Filters](#filters)
 - [Statistics](#statistics)
 
@@ -41,12 +42,16 @@ Some options are only available in the customization menu, opened from the journ
 | Day order | Oldest to newest | Reverses the complete timeline when set to newest to oldest |
 | Daily header format | `dddd, D MMMM` | Controls how each daily header displays its date |
 | Daily header style | Subtle | Shows each date subtly, as an H1, or hides the date display |
+| Open note control | Show button | Keeps the open-note button, hides it, or opens the note by selecting its daily heading |
+| Hide today's background | Off | Replaces today's shaded card with a date heading in the theme's bold or italic colour |
+| Hide header separator | Off | Removes the line between each daily heading and its note contents |
 | Group days by year | On | Marks year boundaries between consecutive visible daily entries |
 | Group days by month | Off | Groups daily entries beneath compact month and year headings |
 | Year progress | Left | Shows twelve month lines beside the journal that mark the month you are reading, like a scrollbar for the year; select a month to go to its first note. Choose left, right, hidden, or experimental, which puts them on the left with every month named. Appears only when the pane is at least 120 px wider than the journal |
 | Focus today on open | On | Opens the journal at today's note and places the cursor there |
 | Open journal on startup | Off | Opens or reveals Journal View after Obsidian restores the workspace. The Homepage plugin cannot select Journal View, so use this instead; if you use both, let only one of them open content at startup |
 | Only show days that have a note | On | Skips empty days while always keeping today visible; turn it off to show every day |
+| Hide note H1 heading | Off | Hides a leading H1 in the journal while keeping it in the daily note file |
 | Show file modification history | Off | Lists the files created or last edited on each day at the bottom of the day; see [File modification history](#file-modification-history) |
 | Rich editor | On | Uses Obsidian's Markdown editor; turn it off to use the plain-text fallback |
 | Autosave delay | 2000 ms | Sets how long Journal View waits after typing before saving |
@@ -104,6 +109,25 @@ then carry a hollow dot in **Go to date**. A day whose note is hidden by the fil
 whatever files it has.
 
 File history sits below the note card, outside today’s highlighted background.
+
+## Editing and completed tasks
+
+If a note changes elsewhere while you are editing it, Journal View saves your text to a separate
+conflict copy and continues saving further text edits there. The original note stays untouched.
+Temporary save failures retry automatically, even after the entry leaves the timeline. Failed editor
+reads are held for another attempt instead of being saved as empty notes.
+
+Retries keep pending edits in memory while Obsidian is running. They cannot protect unsaved work if
+the app or device shuts down before a write succeeds.
+
+Press **Cmd+A** on Mac or **Ctrl+A** on Windows/Linux inside a daily entry to select the current line
+without its list or task marker. Press again for the current heading's contents, then once more for
+the whole note body without its leading H1. Moving the cursor or editing starts over.
+
+When **Completed Tasks** is enabled, Journal View uses its sorter for the active journal entry. Its
+interval, task statuses, priority order, blacklist words, and `completedTasks: false` setting all
+apply. Setting its interval to zero disables automatic sorting. Its **Reorder on tab change** option
+also sorts an edited entry when you leave that entry. Completed Tasks itself is unchanged.
 
 ## Filters
 

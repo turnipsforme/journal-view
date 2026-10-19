@@ -16,6 +16,8 @@
 	flex-direction: column;
 	height: 100%;
 	min-height: 0;
+	container-type: inline-size;
+	container-name: journal-pane;
 }
 
 /* ------------------------------------------------------------- toolbar --- */
@@ -220,7 +222,7 @@ button.journal-find-button.is-active {
 .journal-day-card {
 	position: relative;
 	border-radius: var(--radius-m);
-	padding: var(--size-4-2) var(--size-4-3) var(--size-4-3);
+	padding: var(--size-4-3) var(--size-4-5) var(--size-4-3);
 	transition: background-color 120ms ease-in-out;
 }
 
@@ -294,21 +296,35 @@ button.journal-find-button.is-active {
 	align-items: center;
 	justify-content: space-between;
 	gap: var(--size-4-2);
-	padding-bottom: var(--size-2-2);
-	margin-bottom: var(--size-2-3);
+	padding-bottom: var(--size-4-2);
+	margin-bottom: var(--size-4-3);
 	border-bottom: 1px solid var(--background-modifier-border);
 	transition: opacity 120ms ease-in-out;
+}
+
+.journal-header-separator-hidden .journal-day-header {
+	border-bottom-color: transparent;
 }
 
 .journal-day-title {
 	display: flex;
 	align-items: baseline;
-	gap: var(--size-4-2);
+	gap: var(--size-4-3);
 	min-width: 0;
 }
 
 .journal-day-title[hidden] {
 	display: none;
+}
+
+.journal-day-title-clickable {
+	border-radius: var(--radius-s);
+	cursor: var(--cursor-link, pointer);
+}
+
+.journal-day-title-clickable:focus-visible {
+	outline: 2px solid var(--background-modifier-border-focus, var(--interactive-accent));
+	outline-offset: var(--size-2-1);
 }
 
 .journal-day-date {
@@ -325,6 +341,13 @@ button.journal-find-button.is-active {
 	border-bottom: none;
 }
 
+.journal-day-header-h1 .journal-day-title {
+	flex-wrap: wrap;
+	row-gap: var(--size-2-1);
+	font-family: var(--font-text);
+	font-size: var(--font-text-size);
+}
+
 .journal-day-header-h1 .journal-day-date {
 	margin: 0;
 	padding-block: 0.08em;
@@ -336,6 +359,12 @@ button.journal-find-button.is-active {
 	font-weight: var(--h1-weight);
 	letter-spacing: var(--h1-letter-spacing);
 	line-height: var(--h1-line-height);
+	white-space: normal;
+	overflow-wrap: anywhere;
+}
+
+.journal-day-header-h1 .journal-day-badge {
+	font-family: var(--font-interface);
 }
 
 /* Hidden dates should not leave an empty header band. Keep the note actions
@@ -383,6 +412,10 @@ button.journal-find-button.is-active {
 }
 
 .journal-day-note-label[hidden] {
+	display: none;
+}
+
+.journal-open-note-button-hidden .journal-day-open {
 	display: none;
 }
 
@@ -1000,7 +1033,9 @@ button.journal-day-metadata-value-button:focus-visible,
 }
 
 /* A note that has just become an editor is held at the height of the preview it
-   replaced until the editor completes its first real layout pass. */
+   replaced until the editor completes its first real layout pass. A visible
+   day's preview height survives a focus-triggered mount too; a real edit or a
+   return to preview mode releases it without a jump on click. */
 .journal-entry-editing .journal-day-body {
 	min-height: max(
 		calc(var(--line-height-normal) * 1em + var(--journal-body-pad-top) + var(--journal-body-pad-bottom)),
@@ -1032,18 +1067,32 @@ button.journal-day-metadata-value-button:focus-visible,
 /* Today gets a quiet highlight so the centre of the journal is obvious. */
 .journal-day-today .journal-day-card {
 	background-color: var(--background-primary-alt);
+	padding-block: var(--size-4-5) var(--size-4-4);
+	border-radius: var(--radius-l, var(--radius-m));
 }
 
-/* ...and more room around its text than the days around it. The bottom stands
-   in for the header stacked above the text, so the two gaps read as even; it
-   is short of that sum because the card's own padding sits under the body.
-   With several notes, the room goes above the first and below the last. */
+/* The card and header supply the spacing; do not add another large inset
+   inside the editor, especially when the note's leading H1 is hidden. */
 .journal-day-today .journal-entry:first-child .journal-day-body {
-	--journal-body-pad-top: var(--size-4-8);
+	--journal-body-pad-top: var(--size-2-2);
 }
 
 .journal-day-today .journal-entry:last-child .journal-day-body {
-	--journal-body-pad-bottom: var(--size-4-12);
+	--journal-body-pad-bottom: 0px;
+}
+
+.journal-today-background-hidden .journal-day-today .journal-day-card {
+	background-color: transparent;
+}
+
+.journal-today-background-hidden .journal-day-today .journal-day-date {
+	color: var(--strong-color, var(--em-color, var(--bold-color, var(--italic-color, var(--text-accent)))));
+}
+
+@container journal-pane (max-width: 32rem) {
+	.journal-day-card {
+		padding-inline: var(--size-4-3);
+	}
 }
 
 /* Days without a note yet: visible, but clearly not real content. */
@@ -1107,6 +1156,25 @@ body.is-phone .journal-view .view-content .journal-entry-editing .journal-day-bo
 .journal-day-body .cm-contentContainer,
 .journal-day-body .cm-content {
 	padding: 0;
+}
+
+/* Themes add space above Markdown headings as if another paragraph preceded
+   them. The journal date already supplies that separation for the first line. */
+.journal-day-body .markdown-source-view.mod-cm6 .cm-content > .cm-line:first-child {
+	padding-top: 0;
+	margin-top: 0;
+}
+
+/* Backlinks are part of a small daily card, not the bottom of a full-page note. */
+.journal-day-body .embedded-backlinks {
+	margin-block: var(--size-4-5) 0;
+	padding-bottom: 0;
+	min-height: 0;
+}
+
+.journal-day-body .embedded-backlinks .backlink-pane {
+	padding-bottom: 0;
+	min-height: 0;
 }
 
 .journal-day-body .cm-gutters {

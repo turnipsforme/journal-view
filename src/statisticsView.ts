@@ -7,7 +7,7 @@ import { NewWordsMosaic } from "./newWords";
 import { DAY_KEY_FORMAT } from "./noteIndex";
 import { NoteStatistics, wordCountLevel } from "./statistics";
 
-export const VIEW_TYPE_STATISTICS = "journal-statistics";
+export const VIEW_TYPE_STATISTICS = "journal-statistics-wren";
 
 interface DayTile {
 	date: Moment;

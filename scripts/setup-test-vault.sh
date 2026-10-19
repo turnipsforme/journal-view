@@ -20,7 +20,7 @@ mkdir -p "$vault/.obsidian/plugins" "$vault/Journal" "$vault/Templates" "$vault/
 # rebuild. The folder itself is real, so the vault's settings (data.json) stay
 # inside the vault instead of landing in the repository root, where a copy of
 # the plugin folder would carry them into another vault.
-plugin="$vault/.obsidian/plugins/journal-view"
+plugin="$vault/.obsidian/plugins/journal-view-wren"
 if [ -L "$plugin" ]; then
 	# Older vaults linked the whole folder to the repository root; replace the
 	# link itself (never what it points to), keeping the settings written there.
@@ -73,7 +73,7 @@ JSON
 
 write .obsidian/community-plugins.json <<'JSON'
 [
-	"journal-view"
+	"journal-view-wren"
 ]
 JSON
 
@@ -173,7 +173,7 @@ here stays local. Rebuild it any time with `npm run test-vault` from the reposit
 root; files that already exist are kept.
 
 The plugin's `main.js`, `manifest.json` and `styles.css` in
-`.obsidian/plugins/journal-view` link to the repository root, so the vault loads
+`.obsidian/plugins/journal-view-wren` link to the repository root, so the vault loads
 whatever `npm run build` last produced. Its settings (`data.json`) stay in that
 folder, inside the vault, so test settings never travel with the plugin files.
 
@@ -197,14 +197,14 @@ The `obsidian` CLI reaches the vault by name, which beats clicking for anything
 repeatable:
 
 ```bash
-obsidian vault=test-vault command id=journal-view:open
+obsidian vault=test-vault command id=journal-view-wren:open
 ```
 
 `eval` runs JavaScript inside the vault's window, so a day can be inspected
 directly:
 
 ```bash
-obsidian vault=test-vault eval code='const v=app.workspace.getLeavesOfType("journal-view")[0].view; const s=v.sections.find(x=>x.offset===0); s.editor.focus(); s.editor.getValue()'
+obsidian vault=test-vault eval code='const v=app.workspace.getLeavesOfType("journal-view-wren")[0].view; const s=v.sections.find(x=>x.offset===0); s.editor.focus(); s.editor.getValue()'
 ```
 
 Two things will waste your afternoon if you do not know them:
@@ -223,7 +223,7 @@ Two things will waste your afternoon if you do not know them:
   has the old code:
 
   ```bash
-  obsidian vault=test-vault eval code='(async()=>{await app.plugins.disablePlugin("journal-view"); await app.plugins.enablePlugin("journal-view"); return "reloaded"})()'
+  obsidian vault=test-vault eval code='(async()=>{await app.plugins.disablePlugin("journal-view-wren"); await app.plugins.enablePlugin("journal-view-wren"); return "reloaded"})()'
   ```
 
 Useful while debugging: `dev:errors` (unhandled rejections land here), `dev:console`,
@@ -294,7 +294,7 @@ device, open this vault, and select Obsidian under **Develop -> [device]**.
    the name; a title with `/` or `#`, or one another note has, is refused with a
    notice. A plain `2026-08-02.md` has no title to select.
 5. **Migration from 1.4.0.** Disable the plugin, set `"dateFormat": "YYYY-MM-DD*"`
-   in `.obsidian/plugins/journal-view/data.json`, enable it again: the Date
+   in `.obsidian/plugins/journal-view-wren/data.json`, enable it again: the Date
    format field reads `YYYY-MM-DD` and the toggle is on.
 6. **A format with a time.** With the format `YYYY-MM-DD HHmm`, the button names
    its note by the format at the current time, a minute later when that is taken.
@@ -346,7 +346,7 @@ color: red
 Open the journal's **More options** menu and choose **Statistics**, or run:
 
 ```bash
-obsidian vault=test-vault command id=journal-view:statistics
+obsidian vault=test-vault command id=journal-view-wren:statistics
 ```
 
 - Check a normal year and a leap year: 365 and 366 tiles, including February 29.

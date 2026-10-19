@@ -5,7 +5,7 @@ import { createMoment } from "./moment";
 import { applyIcon } from "./toolbar";
 
 /** Where a hovered file's page preview comes from, as listed in the Page preview settings. */
-export const FILES_HOVER_SOURCE = "journal-view";
+export const FILES_HOVER_SOURCE = "journal-view-wren";
 
 /** Files listed before the rest wait behind "Show all". */
 const LIST_LIMIT = 50;
