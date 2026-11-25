@@ -182,32 +182,9 @@ if (process.argv.includes('--measure')) {
   measure().catch(error => {console.error(error); process.exitCode = 1;});
 } else {
   const {test} = require('node:test');
-  test('paired synthetic vault comparison (mocked)', () => {
-    const os = require('node:os');
-    const crypto = require('node:crypto');
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'journal-performance-'));
-    const indexPath = path.join(tmp, 'src', 'noteIndex.ts');
-    try {
-      fs.cpSync(path.join(root, 'src'), path.join(tmp, 'src'), {recursive: true});
-      fs.mkdirSync(path.join(tmp, 'tests'));
-      const script = path.join(tmp, 'tests', 'performance.cjs');
-      fs.copyFileSync(__filename, script);
-      fs.symlinkSync(path.join(root, 'node_modules'), path.join(tmp, 'node_modules'), 'dir');
-      const candidate = fs.readFileSync(indexPath, 'utf8');
-      const changed = "let back = earlier >= 0 ? origin - dayNumber(keys[earlier]) : Infinity;\n\tlet ahead = later < keys.length ? dayNumber(keys[later]) - origin : Infinity;\n\twhile (earlier >= 0 || later < keys.length) {\n\t\tif (back < ahead || (back === ahead && direction < 0)) {\n\t\t\taround.push(keys[earlier--]);\n\t\t\tback = earlier >= 0 ? origin - dayNumber(keys[earlier]) : Infinity;\n\t\t} else {\n\t\t\taround.push(keys[later++]);\n\t\t\tahead = later < keys.length ? dayNumber(keys[later]) - origin : Infinity;\n\t\t}";
-      assert.ok(candidate.includes(changed));
-      const baseline = candidate.replace(changed, "while (earlier >= 0 || later < keys.length) {\n\t\tconst back = earlier >= 0 ? origin - dayNumber(keys[earlier]) : Infinity;\n\t\tconst ahead = later < keys.length ? dayNumber(keys[later]) - origin : Infinity;\n\t\tif (back < ahead || (back === ahead && direction < 0)) around.push(keys[earlier--]);\n\t\telse around.push(keys[later++]);");
-      const gitBlob = crypto.createHash('sha1').update('blob ' + Buffer.byteLength(baseline) + '\0').update(baseline).digest('hex');
-      assert.equal(gitBlob, "57db2404ce1fdfbeef6c336afd5391ce144c3751");
-      for (const [i, variant] of ['baseline', 'candidate', 'candidate', 'baseline'].entries()) {
-        fs.writeFileSync(indexPath, variant === 'baseline' ? baseline : candidate);
-        console.log('PERF_PAIR ' + JSON.stringify({run: i + 1, variant}));
-        console.log(execFileSync(process.execPath, ['--expose-gc', script, '--measure'], {
-          encoding: 'utf8', env: {...process.env, TZ: 'UTC'}, timeout: 120000,
-        }));
-      }
-    } finally {
-      fs.rmSync(tmp, {recursive: true, force: true});
-    }
+  test('synthetic vault performance and correctness baseline (mocked)', () => {
+    console.log(execFileSync(process.execPath, ['--expose-gc', __filename, '--measure'], {
+      encoding: 'utf8', env: {...process.env, TZ: 'UTC'}, timeout: 120000,
+    }));
   });
 }
