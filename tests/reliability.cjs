@@ -527,3 +527,61 @@ test('benchmark incremental unfiltered index updates on synthetic vaults', () =>
     console.log('INCREMENTAL_RESULT ' + JSON.stringify({size, median, samples}));
   }
 });
+
+test('unfiltered incremental projection stays empty and active rules rebuild correctly', () => {
+  const e = environment();
+  const {FilteredDailyNoteIndex} = e.load('filter');
+  const files = new Map();
+  const keys = new Set();
+  let rules = [];
+  let lastPath;
+  let lookups = 0;
+  const base = {
+    version: 0, ensureCurrent() {}, resolvedConfig: () => ({}),
+    changedSince(version) {
+      if (version === this.version) return [];
+      return version === this.version - 1 && lastPath ? [lastPath] : null;
+    },
+    keyForPath: path => path.slice(8, -3),
+    has: key => keys.has(key),
+    get size() {return keys.size;},
+  };
+  const index = new FilteredDailyNoteIndex({
+    vault: {getMarkdownFiles: () => [...files.values()], getAbstractFileByPath: path => files.get(path) ?? null},
+    metadataCache: {getFileCache(file) {lookups++; return {frontmatter: {include: file.path.includes('01.md')}};}},
+  }, base, () => rules);
+  function change(key, exists) {
+    const path = 'Journal/' + key + '.md';
+    if (exists) {files.set(path, new e.TFile(path)); keys.add(key);}
+    else {files.delete(path); keys.delete(key);}
+    lastPath = path; base.version++; index.ensureCurrent();
+    assert.equal(index.baseVersion, base.version);
+  }
+  const empty = () => {
+    for (const field of ['keys', 'matchingPaths', 'pathKeys', 'matchingCounts']) assert.equal(index[field].size, 0);
+  };
+  index.ensureCurrent();
+  change('2026-01-01', true);
+  change('2026-01-02', true);
+  assert.equal(index.size, 2);
+  assert.equal(index.has('2026-01-02'), true);
+  empty(); assert.equal(lookups, 0);
+  rules = [{kind: 'property', mode: 'include', property: 'include', value: true}];
+  index.ensureCurrent();
+  assert.equal(index.size, 1);
+  assert.equal(index.has('2026-01-01'), true);
+  assert.equal(index.has('2026-01-02'), false);
+  change('2026-01-01', false);
+  assert.equal(index.size, 0);
+  change('2026-02-01', true);
+  assert.equal(index.size, 1);
+  assert.equal(index.has('2026-02-01'), true);
+  rules = []; index.ensureCurrent(); empty();
+  const prior = lookups;
+  change('2026-02-01', false);
+  change('2026-02-02', true);
+  assert.equal(index.size, 2);
+  assert.equal(index.has('2026-02-01'), false);
+  assert.equal(index.has('2026-02-02'), true);
+  empty(); assert.equal(lookups, prior);
+});
