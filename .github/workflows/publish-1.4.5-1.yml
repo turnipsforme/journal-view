@@ -1,0 +1,78 @@
+name: Publish 1.4.5-1
+on:
+  push:
+    branches:
+      - release/publish-1.4.5-1
+    paths:
+      - .github/workflows/publish-1.4.5-1.yml
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+concurrency:
+  group: publish-1.4.5-1
+  cancel-in-progress: false
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_VERSION: 1.4.5-1
+      RELEASE_COMMIT: 3fb7fdc3fd8995900dca9593a1c9ac60628fff07
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: 3fb7fdc3fd8995900dca9593a1c9ac60628fff07
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+      - name: Verify release commit and version
+        run: |
+          test "$(git rev-parse HEAD)" = "$RELEASE_COMMIT"
+          test "$(git ls-remote origin refs/heads/main | cut -f1)" = "$RELEASE_COMMIT"
+          node -e 'for (const file of ["manifest.json", "package.json", "package-lock.json"]) if (require("./" + file).version !== process.env.RELEASE_VERSION) throw new Error(file + " version mismatch")'
+      - name: Build plugin
+        run: |
+          npm ci
+          npm run build
+          test -s main.js
+          test -s manifest.json
+          test -s styles.css
+      - name: Attest build provenance
+        uses: actions/attest@v4
+        with:
+          subject-path: |
+            main.js
+            styles.css
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_VERSION" >/dev/null 2>&1; then
+            echo "Release already exists; refusing to overwrite it."
+            exit 1
+          fi
+          remote_tag="$(git ls-remote origin "refs/tags/$RELEASE_VERSION^{}" | cut -f1)"
+          if [ -z "$remote_tag" ]; then
+            test -z "$(git ls-remote origin "refs/tags/$RELEASE_VERSION")"
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git tag -a "$RELEASE_VERSION" "$RELEASE_COMMIT" -m "Release $RELEASE_VERSION"
+            git push origin "refs/tags/$RELEASE_VERSION"
+          else
+            test "$remote_tag" = "$RELEASE_COMMIT"
+          fi
+          cat > /tmp/release-notes.md <<'NOTES'
+          Fork-only follow-up to upstream 1.4.5.
+
+          ## New features
+          - Added the Hide empty past days mode while keeping today and empty future dates available.
+          - Synchronized the visibility selector between Settings and the filter modal and migrated existing saved preferences.
+
+          ## Fixes
+          - Find and date navigation respect the new visibility mode, including distant notes and file-only days.
+
+          All release PR checks passed.
+          NOTES
+          gh release create "$RELEASE_VERSION" --verify-tag --latest --title "$RELEASE_VERSION" --notes-file /tmp/release-notes.md main.js manifest.json styles.css
