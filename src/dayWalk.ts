@@ -62,12 +62,13 @@ export class ShownDays implements DaySequence {
 		private matchingNotes: DaySequence,
 		/** Days with files, or null while those do not count. */
 		private files: () => DaySequence | null,
+		private includeFileDay: (key: string) => boolean = () => true,
 	) {}
 
 	has(key: string): boolean {
 		if (this.matchingNotes.has(key)) return true;
 		const files = this.files();
-		return !!files && files.has(key) && !this.notes.has(key);
+		return !!files && files.has(key) && !this.notes.has(key) && this.includeFileDay(key);
 	}
 
 	next(key: string): string | null {
@@ -92,7 +93,7 @@ export class ShownDays implements DaySequence {
 		if (!files) return noted;
 		const reached = (day: string) => noted !== null && (direction > 0 ? day >= noted : day <= noted);
 		for (let day = along(files, key); day !== null && !reached(day); day = along(files, day)) {
-			if (!this.notes.has(day)) return day;
+			if (!this.notes.has(day) && this.includeFileDay(day)) return day;
 		}
 		return noted;
 	}
@@ -118,7 +119,7 @@ export class DayWalker {
 		readonly today: Moment,
 		private notes: DaySequence,
 		private shown: ShownDays,
-		private hideEmpty: () => boolean,
+		private hideEmpty: (offset: number) => boolean,
 	) {}
 
 	dateFor(offset: number): Moment {
@@ -141,7 +142,7 @@ export class DayWalker {
 	 * there instead.
 	 */
 	next(from: number, direction: -1 | 1): number | null {
-		if (this.hideEmpty()) {
+		if (this.hideEmpty(from + direction)) {
 			const key = this.keyFor(from);
 			const found = direction < 0 ? this.shown.prev(key) : this.shown.next(key);
 			const noted = found ? this.offsetFor(found) : null;
@@ -167,7 +168,7 @@ export class DayWalker {
 	isVisible(offset: number): boolean {
 		if (this.isPinned(offset)) return true;
 		const key = this.keyFor(offset);
-		return this.shown.has(key) || (!this.notes.has(key) && !this.hideEmpty());
+		return this.shown.has(key) || (!this.notes.has(key) && !this.hideEmpty(offset));
 	}
 
 	/** True for a day that is shown whether or not it has a note. */
@@ -203,7 +204,7 @@ export class DayWalker {
 		return offset - before <= after - offset ? before : after;
 	}
 
-	private isReachable(offset: number): boolean {
-		return isOffsetReachable(offset, this.hideEmpty(), this.shown.has(this.keyFor(offset)));
+	isReachable(offset: number): boolean {
+		return isOffsetReachable(offset, this.hideEmpty(offset), this.shown.has(this.keyFor(offset)));
 	}
 }

@@ -1,7 +1,9 @@
 import { App, PluginSettingTab, Setting, requireApiVersion } from "obsidian";
-import type { SettingDefinition, SettingDefinitionItem, ToggleComponent } from "obsidian";
+import type { SettingDefinition, SettingDefinitionItem, DropdownComponent } from "obsidian";
 import type { VaultDailyConfig } from "./dailyNotes";
 import type JournalViewPlugin from "./main";
+import { EMPTY_DAY_VISIBILITY_DESCRIPTION, EMPTY_DAY_VISIBILITY_OPTIONS, isEmptyDayVisibility } from "./dayVisibility";
+import type { EmptyDayVisibility } from "./dayVisibility";
 
 export const MIN_SAVE_DELAY = 200;
 export const MAX_SAVE_DELAY = 3000;
@@ -66,8 +68,8 @@ export interface JournalViewSettings {
 	goToNotePosition: GoToNotePosition;
 	/** Open or reveal the journal after Obsidian restores the workspace. */
 	openJournalOnStartup: boolean;
-	/** Show only days that have a note (today always shows). */
-	hideEmptyDays: boolean;
+	/** Which days without notes appear (today always shows). */
+	emptyDayVisibility: EmptyDayVisibility;
 	/** Tag and property rules that decide which existing notes are visible. */
 	filterRules: JournalFilterRule[];
 	/** Show frontmatter tags above each existing note's body. */
@@ -114,7 +116,7 @@ export const DEFAULT_SETTINGS: JournalViewSettings = {
 	focusTodayOnOpen: true,
 	goToNotePosition: "bottom",
 	openJournalOnStartup: false,
-	hideEmptyDays: true,
+	emptyDayVisibility: "notes",
 	filterRules: [],
 	showTags: false,
 	displayProperties: [],
@@ -149,7 +151,6 @@ type ToggleSettingKey =
 	| "richEditor"
 	| "focusTodayOnOpen"
 	| "openJournalOnStartup"
-	| "hideEmptyDays"
 	| "hideDailyNoteH1"
 	| "hideHeaderSeparator"
 	| "hideTodayBackground"
@@ -201,6 +202,11 @@ interface JournalSliderSetting extends JournalSettingBase {
 }
 
 type JournalDropdownControl =
+	| {
+			type: "dropdown";
+			key: "emptyDayVisibility";
+			options: Record<EmptyDayVisibility, string>;
+	  }
 	| {
 			type: "dropdown";
 			key: "goToNotePosition";
@@ -255,7 +261,7 @@ interface LegacySliderTooltip {
 }
 
 export class JournalViewSettingTab extends PluginSettingTab {
-	private hideEmptyToggle: ToggleComponent | null = null;
+	private emptyDayDropdown: DropdownComponent | null = null;
 
 	constructor(app: App, private plugin: JournalViewPlugin) {
 		super(app, plugin);
@@ -275,6 +281,9 @@ export class JournalViewSettingTab extends PluginSettingTab {
 
 	private toDefinition(item: JournalSetting): SettingDefinition<SettingKey> {
 		const { name, desc } = item;
+		if (item.control?.type === "dropdown" && item.control.key === "emptyDayVisibility") {
+			return { name, desc, render: (setting) => this.renderDayVisibility(setting.setName(name).setDesc(desc)) };
+		}
 		if (isInheritedSetting(item)) {
 			const control = item.control;
 			return { name, desc, render: (setting) => this.renderInherited(setting.setName(name).setDesc(desc), control) };
@@ -436,12 +445,9 @@ export class JournalViewSettingTab extends PluginSettingTab {
 						},
 					},
 					{
-						name: "Only show days that have a note",
-						desc:
-							"Days with no note are skipped entirely, so the journal jumps from one note to the next. " +
-							"Today is always shown, and so are days with files while files from each day are shown. " +
-							"When off, every day appears, faded until you type in it.",
-						control: { type: "toggle", key: "hideEmptyDays" },
+						name: "Empty days",
+						desc: EMPTY_DAY_VISIBILITY_DESCRIPTION,
+						control: { type: "dropdown", key: "emptyDayVisibility", options: EMPTY_DAY_VISIBILITY_OPTIONS },
 					},
 					{
 						name: "Hide note H1 heading",
@@ -628,11 +634,16 @@ export class JournalViewSettingTab extends PluginSettingTab {
 					changed = true;
 				}
 				break;
+			case "emptyDayVisibility":
+				if (isEmptyDayVisibility(value)) {
+					this.plugin.settings[key] = value;
+					changed = true;
+				}
+				break;
 			case "multipleNotesPerDay":
 			case "richEditor":
 			case "focusTodayOnOpen":
 			case "openJournalOnStartup":
-			case "hideEmptyDays":
 			case "hideDailyNoteH1":
 			case "hideHeaderSeparator":
 			case "hideTodayBackground":
@@ -651,7 +662,7 @@ export class JournalViewSettingTab extends PluginSettingTab {
 
 	display(): void {
 		const { containerEl } = this;
-		this.hideEmptyToggle = null;
+		this.emptyDayDropdown = null;
 		containerEl.empty();
 		for (const group of this.definitions()) {
 			new Setting(containerEl).setName(group.heading).setHeading();
@@ -727,7 +738,6 @@ export class JournalViewSettingTab extends PluginSettingTab {
 				break;
 			case "toggle":
 				setting.addToggle((toggle) => {
-					if (control.key === "hideEmptyDays") this.hideEmptyToggle = toggle;
 					toggle
 						.setValue(this.plugin.settings[control.key])
 						.onChange((value) => this.setControlValue(control.key, value));
@@ -743,6 +753,10 @@ export class JournalViewSettingTab extends PluginSettingTab {
 				});
 				break;
 			case "dropdown":
+				if (control.key === "emptyDayVisibility") {
+					this.renderDayVisibility(setting);
+					break;
+				}
 				setting.addDropdown((dropdown) =>
 					dropdown
 						.addOptions(control.options)
@@ -753,8 +767,17 @@ export class JournalViewSettingTab extends PluginSettingTab {
 		}
 	}
 
+	private renderDayVisibility(setting: Setting): void {
+		setting.addDropdown((dropdown) => {
+			this.emptyDayDropdown = dropdown;
+			dropdown.addOptions(EMPTY_DAY_VISIBILITY_OPTIONS)
+				.setValue(this.plugin.settings.emptyDayVisibility)
+				.onChange((value) => this.setControlValue("emptyDayVisibility", value));
+		});
+	}
+
 	syncFilterControls(): void {
-		this.hideEmptyToggle?.setValue(this.plugin.settings.hideEmptyDays);
+		this.emptyDayDropdown?.setValue(this.plugin.settings.emptyDayVisibility);
 	}
 }
 

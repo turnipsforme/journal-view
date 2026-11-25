@@ -24,7 +24,7 @@ export interface DatePickerOptions {
 	/** The day the journal is currently showing, if it has one. */
 	current?: Moment;
 	/** Indexed notes beyond the empty-day safety range can be opened. */
-	allowDistantNotes: boolean;
+	allowDistantNotes(key: string): boolean;
 	/** The timeline's complete visibility rule, including empty days and Today. */
 	isVisible(date: Moment): boolean;
 	onPick(date: Moment): void;
@@ -83,12 +83,12 @@ export class DatePickerModal extends Modal {
 		this.earliest = min.clone().startOf("month");
 		this.latest = max.clone().startOf("month");
 
-		const range = options.allowDistantNotes ? options.index.range() : null;
+		const range = options.index.range();
 		if (range) {
-			if (range.first < this.standardMinKey) {
+			if (range.first < this.standardMinKey && options.allowDistantNotes(range.first)) {
 				this.earliest = createMoment(range.first, DAY_KEY_FORMAT, true).startOf("month");
 			}
-			if (range.last > this.standardMaxKey) {
+			if (range.last > this.standardMaxKey && options.allowDistantNotes(range.last)) {
 				this.latest = createMoment(range.last, DAY_KEY_FORMAT, true).startOf("month");
 			}
 		}
@@ -218,7 +218,7 @@ export class DatePickerModal extends Modal {
 	/** Previous month, skipping an out-of-range gap to the next indexed month. */
 	private monthBefore(): Moment | null {
 		const adjacent = this.first.clone().subtract(1, "month");
-		if (!this.options.allowDistantNotes || this.isStandardMonth(adjacent)) return adjacent;
+		if (!this.options.allowDistantNotes(adjacent.format(DAY_KEY_FORMAT)) || this.isStandardMonth(adjacent)) return adjacent;
 		const key = this.options.index.prev(this.first.format(DAY_KEY_FORMAT));
 		return key ? createMoment(key, DAY_KEY_FORMAT, true).startOf("month") : null;
 	}
@@ -226,7 +226,7 @@ export class DatePickerModal extends Modal {
 	/** Next month, skipping an out-of-range gap to the next indexed month. */
 	private monthAfter(): Moment | null {
 		const adjacent = this.last.clone().add(1, "month");
-		if (!this.options.allowDistantNotes || this.isStandardMonth(adjacent)) return adjacent;
+		if (!this.options.allowDistantNotes(adjacent.format(DAY_KEY_FORMAT)) || this.isStandardMonth(adjacent)) return adjacent;
 		const endKey = this.last.clone().date(this.last.daysInMonth()).format(DAY_KEY_FORMAT);
 		const key = this.options.index.next(endKey);
 		return key ? createMoment(key, DAY_KEY_FORMAT, true).startOf("month") : null;
@@ -321,7 +321,7 @@ export class DatePickerModal extends Modal {
 			this.currentEl = cell;
 		}
 		const inStandardRange = key >= this.standardMinKey && key <= this.standardMaxKey;
-		const isDistantNote = this.options.allowDistantNotes && this.options.index.has(key);
+		const isDistantNote = this.options.allowDistantNotes(key) && this.options.index.has(key);
 		if ((!inStandardRange && !isDistantNote) || !visible) {
 			cell.addClass("is-out-of-range");
 			cell.disabled = true;

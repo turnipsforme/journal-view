@@ -1,11 +1,12 @@
 import { AbstractInputSuggest, App, Modal, Notice, Setting, getAllTags } from "obsidian";
-import type { CachedMetadata, ToggleComponent } from "obsidian";
+import type { CachedMetadata, DropdownComponent } from "obsidian";
 import {
 	normalizeFilterTag,
 	sameFilterRule,
 	sameFilterValue,
 } from "./filter";
 import type JournalViewPlugin from "./main";
+import { EMPTY_DAY_VISIBILITY_DESCRIPTION, EMPTY_DAY_VISIBILITY_OPTIONS, isEmptyDayVisibility } from "./dayVisibility";
 import type {
 	JournalFilterMode,
 	JournalFilterRule,
@@ -125,7 +126,7 @@ export class FilterModal extends Modal {
 	private addButton!: HTMLButtonElement;
 	private addSettingEl!: HTMLElement;
 	private listEl!: HTMLElement;
-	private hideEmptyToggle!: ToggleComponent;
+	private emptyDayDropdown!: DropdownComponent;
 	private stopControlSync: (() => void) | null = null;
 	private tagSuggest: TextSuggest | null = null;
 	private propertySuggest: TextSuggest | null = null;
@@ -150,16 +151,20 @@ export class FilterModal extends Modal {
 		this.discoverMetadata();
 
 		new Setting(this.contentEl)
-			.setName("Show only days with notes")
-			.setDesc("Hide empty dates. Today is always shown.")
-			.addToggle((toggle) =>
-				(this.hideEmptyToggle = toggle).setValue(this.plugin.settings.hideEmptyDays).onChange((value) => {
-					this.plugin.settings.hideEmptyDays = value;
-					this.persist();
-				}),
-			);
+			.setName("Empty days")
+			.setDesc(EMPTY_DAY_VISIBILITY_DESCRIPTION)
+			.addDropdown((dropdown) => {
+				this.emptyDayDropdown = dropdown;
+				dropdown.addOptions(EMPTY_DAY_VISIBILITY_OPTIONS)
+					.setValue(this.plugin.settings.emptyDayVisibility)
+					.onChange((value) => {
+						if (!isEmptyDayVisibility(value)) return;
+						this.plugin.settings.emptyDayVisibility = value;
+						this.persist();
+					});
+			});
 		this.stopControlSync = this.plugin.onFilterControlsChanged(() => {
-			this.hideEmptyToggle.setValue(this.plugin.settings.hideEmptyDays);
+			this.emptyDayDropdown.setValue(this.plugin.settings.emptyDayVisibility);
 		});
 
 		new Setting(this.contentEl)
