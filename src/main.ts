@@ -3,6 +3,7 @@ import { DailyNoteResolver } from "./dailyNotes";
 import { DayFileIndex } from "./dayFiles";
 import { FILES_HOVER_SOURCE } from "./dayFilesList";
 import { ShownDays } from "./dayWalk";
+import { emptyDayVisibilitySetting, hidesEmptyDay } from "./dayVisibility";
 import { WorkspaceEditorBridge } from "./editor";
 import { FilteredDailyNoteIndex, filterRulesSetting, hasIncludeFilter } from "./filter";
 import { createMoment } from "./moment";
@@ -85,7 +86,7 @@ export default class JournalViewPlugin extends Plugin {
 		this.updateViews();
 	}
 
-	/** Keeps the modal and settings-tab copies of the note-only toggle in sync. */
+	/** Keeps the modal and settings-tab copies of the empty-day dropdown in sync. */
 	onFilterControlsChanged(listener: () => void): () => void {
 		this.filterControlListeners.add(listener);
 		return () => this.filterControlListeners.delete(listener);
@@ -106,10 +107,13 @@ export default class JournalViewPlugin extends Plugin {
 		this.dayFiles = new DayFileIndex(this.app, this.index, this.daily, () => this.settings);
 		// File history never makes an empty day eligible in note-only mode.
 		// Include filters also cannot match a day without a note.
-		this.shownDays = new ShownDays(this.index, this.filteredIndex, () =>
-			this.settings.showDayFiles && !this.settings.hideEmptyDays && !hasIncludeFilter(this.settings)
+		this.shownDays = new ShownDays(
+			this.index,
+			this.filteredIndex,
+			() => this.settings.showDayFiles && this.settings.emptyDayVisibility !== "notes" && !hasIncludeFilter(this.settings)
 				? this.dayFiles
 				: null,
+			(key) => !hidesEmptyDay(this.settings.emptyDayVisibility, key < createMoment().format(DAY_KEY_FORMAT) ? -1 : 0),
 		);
 		// onLayoutReady queues callbacks without returning an EventRef, so they
 		// need an explicit guard when the plugin unloads before layout restoration.
@@ -395,7 +399,7 @@ export default class JournalViewPlugin extends Plugin {
 				saved.openJournalOnStartup,
 				DEFAULT_SETTINGS.openJournalOnStartup,
 			),
-			hideEmptyDays: booleanSetting(saved.hideEmptyDays, DEFAULT_SETTINGS.hideEmptyDays),
+			emptyDayVisibility: emptyDayVisibilitySetting(saved.emptyDayVisibility, saved.hideEmptyDays),
 			filterRules: filterRulesSetting(saved.filterRules),
 			showTags: booleanSetting(saved.showTags, DEFAULT_SETTINGS.showTags),
 			displayProperties: propertyNamesSetting(saved.displayProperties),

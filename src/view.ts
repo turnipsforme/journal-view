@@ -8,7 +8,8 @@ import { FilterModal } from "./filterModal";
 import { isFilterActive } from "./filter";
 import { DayHost, DaySection } from "./day";
 import type { NoteEntry } from "./entry";
-import { DayWalker, isOffsetReachable, monthTarget } from "./dayWalk";
+import { DayWalker, monthTarget } from "./dayWalk";
+import { hidesEmptyDay } from "./dayVisibility";
 import { EditorWindow, EditorWindowHost } from "./editorWindow";
 import { distanceFromViewport, findAnchorIndex } from "./scroll";
 import { JournalToolbar } from "./toolbar";
@@ -332,7 +333,7 @@ export class JournalView extends ItemView implements DayHost, AnchorHost, Editor
 			this.today,
 			this.plugin.index,
 			this.plugin.shownDays,
-			() => this.plugin.settings.hideEmptyDays,
+			(offset) => hidesEmptyDay(this.plugin.settings.emptyDayVisibility, offset),
 		);
 		this.exhausted = { start: false, end: false };
 		this.loading = { start: false, end: false };
@@ -348,12 +349,10 @@ export class JournalView extends ItemView implements DayHost, AnchorHost, Editor
 
 		// Command navigation may temporarily reveal an otherwise filtered day.
 		const requestedOffset = around?.clone().startOf("day").diff(this.today, "days");
-		const requestedIndexed =
-			requestedOffset !== undefined && this.plugin.shownDays.has(this.walker.keyFor(requestedOffset));
 		this.commandTargetOffset =
 			revealAround &&
 			requestedOffset !== undefined &&
-			isOffsetReachable(requestedOffset, this.plugin.settings.hideEmptyDays, requestedIndexed)
+			this.walker.isReachable(requestedOffset)
 				? requestedOffset
 				: null;
 
@@ -464,14 +463,15 @@ export class JournalView extends ItemView implements DayHost, AnchorHost, Editor
 	/** Shared visibility predicate for the timeline, calendar and direct navigation. */
 	private isDateVisible(date: Moment): boolean {
 		const day = date.clone().startOf("day");
-		if (day.isSame(createMoment().startOf("day"), "day")) return true;
+		const today = createMoment().startOf("day");
+		if (day.isSame(today, "day")) return true;
 		this.plugin.index.ensureCurrent();
 		this.plugin.filteredIndex.ensureCurrent();
 		this.plugin.dayFiles.ensureCurrent();
 		const key = day.format("YYYY-MM-DD");
 		return (
 			this.plugin.shownDays.has(key) ||
-			(!this.plugin.index.has(key) && !this.plugin.settings.hideEmptyDays)
+			(!this.plugin.index.has(key) && !hidesEmptyDay(this.plugin.settings.emptyDayVisibility, day.diff(today, "days")))
 		);
 	}
 
@@ -1120,7 +1120,8 @@ export class JournalView extends ItemView implements DayHost, AnchorHost, Editor
 			notes: this.plugin.filteredIndex,
 			today: createMoment().startOf("day"),
 			current: this.visibleDate(),
-			allowDistantNotes: this.plugin.settings.hideEmptyDays,
+			allowDistantNotes: (key) => hidesEmptyDay(this.plugin.settings.emptyDayVisibility,
+				key < createMoment().format(DAY_KEY_FORMAT) ? -1 : 0),
 			isVisible: (date) => this.isDateVisible(date),
 			onPick: (date) => this.goToDate(date),
 			onDismiss: () => {
@@ -1180,8 +1181,9 @@ export class JournalView extends ItemView implements DayHost, AnchorHost, Editor
 			year,
 			month,
 			createMoment().format(DAY_KEY_FORMAT),
-			this.plugin.settings.hideEmptyDays,
-			(key) => this.isDateVisible(createMoment(key, DAY_KEY_FORMAT, true)),
+			this.plugin.settings.emptyDayVisibility === "notes",
+			(key) => this.walker.isReachable(this.walker.offsetFor(key)) &&
+				this.isDateVisible(createMoment(key, DAY_KEY_FORMAT, true)),
 		);
 		if (target) this.goToDate(createMoment(target, DAY_KEY_FORMAT, true), false);
 	}
@@ -1218,8 +1220,7 @@ export class JournalView extends ItemView implements DayHost, AnchorHost, Editor
 			return;
 		}
 		const offset = day.diff(this.today, "days");
-		const indexed = this.plugin.shownDays.has(this.walker.keyFor(offset));
-		if (!isOffsetReachable(offset, this.plugin.settings.hideEmptyDays, indexed)) return;
+		if (!this.walker.isReachable(offset)) return;
 		// A view built while hidden has not committed to a scroll position yet.
 		// Rebuild around the requested day so its first measurable resize cannot
 		// centre the old origin over this navigation.
@@ -1650,7 +1651,7 @@ export class JournalView extends ItemView implements DayHost, AnchorHost, Editor
 			groupDaysByYear: settings.groupDaysByYear,
 			hideDailyNoteH1: settings.hideDailyNoteH1,
 			richEditor: settings.richEditor,
-			hideEmptyDays: settings.hideEmptyDays,
+			emptyDayVisibility: settings.emptyDayVisibility,
 			filterRules: settings.filterRules,
 			daySortDirection: settings.daySortDirection,
 			showDayFiles: settings.showDayFiles,

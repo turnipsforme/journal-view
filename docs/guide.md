@@ -27,7 +27,7 @@ Three commands move to a nearby day:
 - **Go to yesterday** opens or reveals the journal, then focuses yesterday's entry.
 - **Go to tomorrow** opens or reveals the journal, then focuses tomorrow's entry.
 
-Yesterday and tomorrow are shown while focused even when the note-only toggle or a metadata filter
+Yesterday and tomorrow are shown while focused even when the empty-day setting or a metadata filter
 would normally hide them. All three commands scroll when the target is nearby and snap when it is
 more than two view heights away.
 
@@ -54,7 +54,7 @@ Some options are only available in the customization menu, opened from the journ
 | Year progress | Left | Shows twelve month lines beside the journal that mark the month you are reading, like a scrollbar for the year, running in the same direction as the days; select a month to go to its first note. Choose left, right, hidden, or experimental, which puts them on the left with every month named. Appears only when the pane is at least 120 px wider than the journal |
 | Focus today on open | On | Opens the journal at today's note and places the cursor there |
 | Open journal on startup | Off | Opens or reveals Journal View after Obsidian restores the workspace. The Homepage plugin cannot select Journal View, so use this instead; if you use both, let only one of them open content at startup |
-| Only show days that have a note | On | Skips empty days while always keeping today visible; turn it off to show every day |
+| Empty days | Only days with notes | Show all days, only days with notes, or hide empty past days while keeping future dates available. Today always appears. |
 | Hide note H1 heading | Off | Hides a leading H1 in the journal while keeping it in the daily note file |
 | Show file modification history | Off | Lists the files created or last edited on each day at the bottom of the day; see [File modification history](#file-modification-history) |
 | Rich editor | On | Uses Obsidian's Markdown editor; turn it off to use the plain-text fallback |
@@ -106,10 +106,10 @@ A file only keeps the date it was last edited, so **Last edited** moves it to th
 changed. File dates can also be reset when a vault is synced, copied, or checked out with git; a
 **Created date property** keeps notes on the day they were written.
 
-With **Only show days that have a note** on, file history does not make a day without a daily note
-appear in the journal or become selectable in **Go to date**. Today and the explicit date-command
-exceptions still apply. Turn note-only filtering off to browse empty days; days with file history
-then carry a hollow dot in **Go to date**. A day whose note is hidden by the filters stays hidden
+With **Empty days** set to **Only days with notes**, file history does not make a day without a daily note
+appear in the journal or become selectable in **Go to date**. **Hide empty past days** applies that rule
+only to earlier dates; future dates work as in **Show all days**. Today and the explicit date-command
+exceptions still apply. Visible file-only days carry a hollow dot in **Go to date** when no include filter is active. A day whose note is hidden by the filters stays hidden
 whatever files it has.
 
 File history sits below the note card, outside today’s highlighted background.
@@ -135,10 +135,10 @@ also sorts an edited entry when you leave that entry. Completed Tasks itself is 
 
 ## Filters
 
-Select the funnel button in the journal toolbar to open the filters. **Show only days with notes** is
-enabled by default; Today remains visible even when it is empty or does not match the metadata
-filters. Turn that option off to keep empty days available for writing while still hiding existing
-notes that do not match.
+Select the funnel button in the journal toolbar to open the filters. **Empty days** defaults to
+**Only days with notes**. Choose **Show all days** to keep all empty days available for writing,
+or **Hide empty past days** to keep only today and future empty days available. Today remains visible
+even when it is empty or does not match the metadata filters; existing notes that do not match stay hidden.
 
 Tag filters use tags from both frontmatter and note content. A parent tag also matches its nested
 tags, so `#project` matches `#project/client`. Property filters compare exact string, number, or
@@ -147,7 +147,7 @@ boolean values, and a list property matches when one of its items equals the con
 Every include filter must match. A note matching any exclude filter is hidden, even if it satisfies
 all includes. On a day with several notes, the day appears when any of them matches, and the notes
 that do not match are hidden within it. The funnel uses the accent color whenever a tag or property filter is active; the
-note-only toggle does not highlight it. Filtered dates are disabled in **Go to date**, **Random entry** picks
+empty-day setting does not highlight it. Filtered dates are disabled in **Go to date**, **Random entry** picks
 only from the notes currently included, and **Find in journal** searches only those notes.
 
 ## Statistics
