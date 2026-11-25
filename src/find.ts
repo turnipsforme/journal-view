@@ -3,6 +3,7 @@ import type JournalViewPlugin from "./main";
 import type { DaySection } from "./day";
 import type { NoteEntry } from "./entry";
 import { MAX_OFFSET } from "./dayWalk";
+import { noteSearchReach } from "./dayVisibility";
 import { countMatches, literalExpression, rangesOf } from "./findText";
 import type { FindRange } from "./findText";
 import { FindResults } from "./findResults";
@@ -76,7 +77,7 @@ interface FindPass {
 	choosing: boolean;
 	reveal: boolean;
 	/** Dates outside these are out of the view's reach; null when every date is in it. */
-	reach: { first: string; last: string } | null;
+	reach: { first: string | null; last: string } | null;
 	indexVersion: number;
 	filterVersion: number;
 	/** Reads started ahead of the walk, by path. */
@@ -357,16 +358,16 @@ export class JournalFind {
 	 * the same limit `isOffsetReachable` sets for an indexed day.
 	 */
 	private reach(): FindPass["reach"] {
-		if (this.host.plugin.settings.hideEmptyDays) return null;
 		const today = createMoment().startOf("day");
-		return {
-			first: today.clone().subtract(MAX_OFFSET, "days").format(DAY_KEY_FORMAT),
-			last: today.clone().add(MAX_OFFSET, "days").format(DAY_KEY_FORMAT),
-		};
+		return noteSearchReach(
+			this.host.plugin.settings.emptyDayVisibility,
+			today.clone().subtract(MAX_OFFSET, "days").format(DAY_KEY_FORMAT),
+			today.clone().add(MAX_OFFSET, "days").format(DAY_KEY_FORMAT),
+		);
 	}
 
 	private reachable(pass: FindPass, key: string): boolean {
-		return !pass.reach || (key >= pass.reach.first && key <= pass.reach.last);
+		return !pass.reach || ((!pass.reach.first || key >= pass.reach.first) && key <= pass.reach.last);
 	}
 
 	/**
