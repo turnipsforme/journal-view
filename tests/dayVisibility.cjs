@@ -30,7 +30,7 @@ function load(name) {
   return module.exports;
 }
 const {DayWalker, ShownDays, monthTarget, MAX_OFFSET} = load('dayWalk');
-const {emptyDayVisibilitySetting, hidesEmptyDay} = load('dayVisibility');
+const {emptyDayVisibilitySetting, hidesEmptyDay, noteSearchReach} = load('dayVisibility');
 function sequence(keys) {
   const sorted = [...keys].sort();
   return {
@@ -104,4 +104,22 @@ test('mixed mode month navigation falls back to visible dates', () => {
     key => walker.isVisible(walker.offsetFor(key)));
   assert.equal(target(2026, 11), '2026-12-01');
   assert.equal(target(2026, 9), '2026-11-20');
+});
+
+test('find bounds follow the same distant-note rules as the walker', () => {
+  const first = '2013-03-18', last = '2040-08-02';
+  const keys = ['2000-01-01', '2026-11-25', '2050-01-01'];
+  for (const mode of ['all', 'notes', 'future']) {
+    const reach = noteSearchReach(mode, first, last);
+    const {walker} = fixture(mode);
+    for (const key of [keys[0], keys[2]]) {
+      const reachable = !reach || ((!reach.first || key >= reach.first) && key <= reach.last);
+      assert.equal(reachable, walker.isReachable(walker.offsetFor(key)));
+    }
+  }
+});
+test('month navigation does not return a visible but unreachable future note', () => {
+  const {walker, shown} = fixture('future');
+  const reachable = key => walker.isReachable(walker.offsetFor(key)) && walker.isVisible(walker.offsetFor(key));
+  assert.notEqual(monthTarget(shown, 2050, 0, '2026-11-25', false, reachable), '2050-01-01');
 });

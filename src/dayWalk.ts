@@ -33,7 +33,7 @@ export function monthTarget(
 	const firstKey = keyOf(1);
 	const lastKey = keyOf(days);
 	const candidates = [shown.next(keyOf(0)), shown.prev(firstKey), todayKey].filter(
-		(key): key is string => key !== null,
+		(key): key is string => key !== null && isVisible(key),
 	);
 	const within = candidates.filter((key) => key >= firstKey && key <= lastKey).sort()[0];
 	if (within) return within;

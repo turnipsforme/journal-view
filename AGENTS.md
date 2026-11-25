@@ -144,6 +144,9 @@ Commands therefore run as `journal-view-wren:open`. Do not copy upstream's
   empty.
 - A daily-note config change rebuilds the view after flushing, instead of
   retargeting dirty sections in place.
+- An editor's `noteContent` merges through `mergeProjectedNoteBody` and may return
+  `null`. Keep it over upstream's `replaceNoteBody` call, which would write a hidden
+  H1 out of the note and save over a failed read.
 - `styles.css` carries the fork's card, header, today, and backlink styling.
   Keep those rules when resolving style conflicts.
 

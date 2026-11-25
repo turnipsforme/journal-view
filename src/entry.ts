@@ -1689,6 +1689,7 @@ export class NoteEntry {
 					value: body,
 					placeholder,
 					file: this.file,
+					displayText: () => this.file?.basename ?? this.path.slice(this.path.lastIndexOf("/") + 1).replace(/\.md$/, ""),
 					noteContent: (editorText) => {
 						const content = this.latestContent;
 						if (this.file && !content && !this.lastKnownContent) return null;

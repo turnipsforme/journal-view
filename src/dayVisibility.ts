@@ -19,6 +19,12 @@ export function emptyDayVisibilitySetting(value: unknown, legacy: unknown): Empt
 	return isEmptyDayVisibility(value) ? value : legacy === false ? "all" : "notes";
 }
 
+/** Search bounds for the calendar-walking part of each mode. */
+export function noteSearchReach(mode: EmptyDayVisibility, first: string, last: string): { first: string | null; last: string } | null {
+	if (mode === "notes") return null;
+	return { first: mode === "future" ? null : first, last };
+}
+
 /** Offsets are calendar days relative to today (negative means past). */
 export function hidesEmptyDay(mode: EmptyDayVisibility, offset: number): boolean {
 	return mode === "notes" || (mode === "future" && offset < 0);

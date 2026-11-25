@@ -220,6 +220,10 @@ export class DatePickerModal extends Modal {
 		const adjacent = this.first.clone().subtract(1, "month");
 		if (!this.options.allowDistantNotes(adjacent.format(DAY_KEY_FORMAT)) || this.isStandardMonth(adjacent)) return adjacent;
 		const key = this.options.index.prev(this.first.format(DAY_KEY_FORMAT));
+		// When returning from a distant note, do not jump over the ordinary calendar.
+		if (this.first.format(DAY_KEY_FORMAT) > this.standardMaxKey && (!key || key < this.standardMaxKey)) {
+			return createMoment(this.standardMaxKey, DAY_KEY_FORMAT, true).startOf("month");
+		}
 		return key ? createMoment(key, DAY_KEY_FORMAT, true).startOf("month") : null;
 	}
 
@@ -229,6 +233,10 @@ export class DatePickerModal extends Modal {
 		if (!this.options.allowDistantNotes(adjacent.format(DAY_KEY_FORMAT)) || this.isStandardMonth(adjacent)) return adjacent;
 		const endKey = this.last.clone().date(this.last.daysInMonth()).format(DAY_KEY_FORMAT);
 		const key = this.options.index.next(endKey);
+		// When returning from a distant note, do not jump over the ordinary calendar.
+		if (endKey < this.standardMinKey && (!key || key > this.standardMinKey)) {
+			return createMoment(this.standardMinKey, DAY_KEY_FORMAT, true).startOf("month");
+		}
 		return key ? createMoment(key, DAY_KEY_FORMAT, true).startOf("month") : null;
 	}
 

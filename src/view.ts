@@ -224,6 +224,7 @@ export class JournalView extends ItemView implements DayHost, AnchorHost, Editor
 			this.contentEl,
 			this.scrollEl,
 			this.plugin.settings.yearProgress,
+			this.sortStep() === -1,
 			(year, month) => this.goToMonth(year, month),
 		);
 
@@ -1181,7 +1182,8 @@ export class JournalView extends ItemView implements DayHost, AnchorHost, Editor
 			month,
 			createMoment().format(DAY_KEY_FORMAT),
 			this.plugin.settings.emptyDayVisibility === "notes",
-			(key) => this.isDateVisible(createMoment(key, DAY_KEY_FORMAT, true)),
+			(key) => this.walker.isReachable(this.walker.offsetFor(key)) &&
+				this.isDateVisible(createMoment(key, DAY_KEY_FORMAT, true)),
 		);
 		if (target) this.goToDate(createMoment(target, DAY_KEY_FORMAT, true), false);
 	}
@@ -1666,6 +1668,7 @@ export class JournalView extends ItemView implements DayHost, AnchorHost, Editor
 		this.syncFilterButton();
 		this.syncDisplaySettings();
 		this.yearProgress?.setMode(this.plugin.settings.yearProgress);
+		this.yearProgress?.setDescending(this.sortStep() === -1);
 		if (!this.ready) {
 			// A build is in flight against the old values - dropping the change
 			// here would leave the toolbar and the days disagreeing.
