@@ -467,3 +467,17 @@ test('returning an editor to preview mode clears its previous height hold', () =
   f.entry.applyPreview({component: {}, container: {}}, 'note body');
   assert.equal(f.minimum(), 0); assert.equal(f.entry.editor, null);
 });
+
+test('nearest-day traversal preserves sparse date order, missing anchors and ties in both directions', () => {
+  const {keysAround} = environment().load('noteIndex');
+  const keys = ['1999-12-31', '2000-01-01', '2000-02-28', '2000-02-29', '2000-03-01', '2000-03-02', '2026-11-25'];
+  for (const key of ['1900-01-01', ...keys, '2000-02-27', '2000-03-03', '2050-01-01']) {
+    for (const direction of [-1, 1]) {
+      const expected = keys.filter(candidate => candidate !== key).sort((a, b) =>
+        Math.abs(Date.parse(a) - Date.parse(key)) - Math.abs(Date.parse(b) - Date.parse(key)) ||
+        direction * (Date.parse(b) - Date.parse(a)));
+      assert.deepEqual(Array.from(keysAround(keys, key, direction)), expected);
+    }
+  }
+  assert.deepEqual(Array.from(keysAround([], '2000-02-29', 1)), []);
+});
