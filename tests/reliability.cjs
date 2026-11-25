@@ -467,3 +467,63 @@ test('returning an editor to preview mode clears its previous height hold', () =
   f.entry.applyPreview({component: {}, container: {}}, 'note body');
   assert.equal(f.minimum(), 0); assert.equal(f.entry.editor, null);
 });
+
+test('benchmark incremental unfiltered index updates on synthetic vaults', () => {
+  const e = environment();
+  const {FilteredDailyNoteIndex} = e.load('filter');
+  const rules = [];
+  function sample(size) {
+    const files = new Map();
+    const keys = new Set();
+    let resolutions = 0;
+    let metadataLookups = 0;
+    let lastPath = null;
+    const base = {
+      version: 0, ensureCurrent() {},
+      changedSince(version) {
+        if (version === this.version) return [];
+        return version === this.version - 1 && lastPath ? [lastPath] : null;
+      },
+      keyForPath(path) {resolutions++; return path.slice(8, -3);},
+      has: key => keys.has(key),
+      get size() {return keys.size;},
+    };
+    const index = new FilteredDailyNoteIndex({
+      vault: {
+        getMarkdownFiles: () => [...files.values()],
+        getAbstractFileByPath: path => files.get(path) ?? null,
+      },
+      metadataCache: {getFileCache() {metadataLookups++; return null;}},
+    }, base, () => rules);
+    index.ensureCurrent();
+    const incoming = Array.from({length: size}, (_, i) => {
+      const key = new Date(Date.UTC(1970, 0, 1 + i)).toISOString().slice(0, 10);
+      return {key, file: new e.TFile('Journal/' + key + '.md')};
+    });
+    const start = performance.now();
+    for (const {key, file} of incoming) {
+      keys.add(key);
+      files.set(file.path, file);
+      lastPath = file.path;
+      base.version++;
+      index.ensureCurrent();
+    }
+    const ms = performance.now() - start;
+    assert.equal(index.size, size);
+    assert.equal(index.has(incoming[0].key), true);
+    assert.equal(index.has(incoming[size - 1].key), true);
+    const membershipEntries = ['keys', 'matchingPaths', 'pathKeys', 'matchingCounts']
+      .reduce((sum, field) => sum + index[field].size, 0);
+    return {ms, resolutions, metadataLookups, membershipEntries};
+  }
+  console.log('INCREMENTAL_ENV ' + JSON.stringify({node: process.version, cpu: require('node:os').cpus()[0]?.model}));
+  for (const size of [365, 2000, 10000]) {
+    sample(size);
+    const samples = Array.from({length: 5}, () => sample(size));
+    const median = {};
+    for (const key of Object.keys(samples[0])) {
+      median[key] = samples.map(row => row[key]).sort((a, b) => a - b)[2];
+    }
+    console.log('INCREMENTAL_RESULT ' + JSON.stringify({size, median, samples}));
+  }
+});
