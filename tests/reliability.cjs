@@ -10,6 +10,7 @@ const root = path.resolve(__dirname, '..');
 
 function environment() {
   const notices = [];
+  const warnings = [];
   const timers = new Map();
   let timerId = 0;
   const clock = {
@@ -45,7 +46,7 @@ function environment() {
     const js = ts.transpileModule(source, {compilerOptions: {module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020}}).outputText;
     const customRequire = spec => spec === 'obsidian' ? obsidian : spec.startsWith('.') ? load(path.basename(spec)) : require(spec);
     vm.runInNewContext('(function(require,module,exports){' + js + '\n})', {
-      console: {warn() {}, error() {}}, window: clock, performance, Date,
+      console: {warn: (...args) => warnings.push(args), error() {}}, window: clock, performance, Date,
       createDiv: () => ({createDiv: () => ({}), createEl: () => ({}), createSpan: () => ({}), empty() {}, appendChild() {}, setText() {}, setAttribute() {}}),
       createFragment: () => ({appendText() {}, createEl() {}}),
     }, {filename: file})(customRequire, module, module.exports);
@@ -88,7 +89,7 @@ function environment() {
     entry.queue = new SaveQueue(value => entry.writeValue(value));
     return {entry, files, writes: () => writes, type: text => {editorText = text}};
   }
-  return {load, notices, timers, clock, TFile, entryFixture};
+  return {load, notices, warnings, timers, clock, TFile, entryFixture};
 }
 
 test('later edits keep saving to the conflict copy without overwriting the original', async () => {
@@ -330,6 +331,7 @@ test('overlapping corpus reads share work, and a failed read can be retried', as
   assert.equal(pending.length, 1);
   pending[0].reject(new Error('read failed'));
   assert.equal(await first, null); assert.equal(await second, null);
+  assert.equal(e.warnings.length, 1);
   const retry = corpus.read(file);
   assert.equal(pending.length, 2);
   pending[1].resolve('---\r\na: b\r\n---\r\n# Title\r\nneedle 😀');
@@ -386,7 +388,7 @@ test('unloading the corpus clears outstanding reads without repopulating it', as
 });
 
 test('a failed obsolete read cannot hide a newer successful result', async () => {
-  const {corpus, file, pending} = corpusFixture();
+  const {corpus, file, pending, e} = corpusFixture();
   const old = corpus.read(file);
   corpus.invalidate(file, [file.path]);
   const fresh = corpus.read(file);
@@ -396,6 +398,7 @@ test('a failed obsolete read cannot hide a newer successful result', async () =>
   assert.equal(await old, 'new body');
   assert.equal(corpus.peek(file), 'new body');
   assert.equal(pending.length, 2);
+  assert.equal(e.warnings.length, 0);
   corpus.onunload();
 });
 

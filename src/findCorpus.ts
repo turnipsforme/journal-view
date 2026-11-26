@@ -12,6 +12,7 @@ interface PendingRead {
 	size: number;
 	revision: number;
 	promise: Promise<string>;
+	text?: string;
 }
 
 interface CachedText {
@@ -105,28 +106,31 @@ export class FindCorpus extends Component {
 			const revision = this.revisions.get(file) ?? 0;
 			this.revisions.set(file, revision);
 			let text: string | null = null;
+			let failure: { error: unknown } | undefined;
 			let read = this.pending.get(file);
 			try {
 				if (!read || read.path !== path || read.mtime !== mtime || read.size !== size || read.revision !== revision) {
-					read = { path, mtime, size, revision, promise: this.app.vault.cachedRead(file).then(editorBody) };
+					read = { path, mtime, size, revision, promise: this.app.vault.cachedRead(file) };
 					this.pending.set(file, read);
 				}
-				text = await read.promise;
+				const content = await read.promise;
+				text = read.text ??= editorBody(content);
 			} catch (error) {
-				console.warn(`Journal View: could not search ${path}`, error);
-			} finally {
-				if (this.pending.get(file) === read) this.pending.delete(file);
+				failure = { error };
 			}
+			const ownsRead = this.pending.get(file) === read;
+			if (ownsRead) this.pending.delete(file);
 			if (this.closed || this.app.vault.getAbstractFileByPath(file.path) !== file) return null;
 			const unchanged =
 				(this.revisions.get(file) ?? 0) === revision &&
 				file.path === path &&
 				file.stat.mtime === mtime &&
 				file.stat.size === size;
-			if (unchanged && text !== null && this.holds > 0) {
-				this.texts.set(path, { file, mtime, size, text });
+			if (unchanged) {
+				if (failure && ownsRead) console.warn(`Journal View: could not search ${path}`, failure.error);
+				if (text !== null && this.holds > 0) this.texts.set(path, { file, mtime, size, text });
+				return text;
 			}
-			if (unchanged) return text;
 			if (attempt + 1 >= READ_ATTEMPTS) return this.peek(file);
 		}
 	}
