@@ -133,6 +133,84 @@ test('a failed internal editor read never saves an empty body and retries captur
   assert.equal(e.timers.size, 0);
 });
 
+test('benchmark search match rank across the journal', {skip: process.env.JOURNAL_PERF !== '1'}, () => {
+  const {FindResults} = environment().load('findResults');
+  function sample(size, instrument) {
+    const results = new FindResults();
+    const keys = Array.from({length: size}, (_, i) => new Date(Date.UTC(1970, 0, i + 1)).toISOString().slice(0, 10));
+    const prefix = [0];
+    for (let i = 0; i < size; i++) {
+      const count = i % 7 + 1;
+      results.set(keys[i], keys[i] + '.md', 0, count, 1);
+      results.set(keys[i], keys[i] + ' evening.md', 1, 2, 1);
+      prefix.push(prefix[i] + count + 2);
+    }
+    const queries = [];
+    for (let i = 0; i < 1000; i++) {
+      const at = i % 4 === 0 ? 0 : i % 4 === 1 ? size - 1 : Math.floor(((i * 7919) % size));
+      const step = i % 2 ? -1 : 1;
+      const path = keys[at] + ' evening.md';
+      const expected = (step > 0 ? prefix[at] : prefix[size] - prefix[at + 1]) + (at % 7 + 1) + 1;
+      queries.push({position: {key: keys[at], path, index: 1}, step, expected});
+    }
+    let lookups = 0;
+    if (instrument) {
+      const get = results.days.get.bind(results.days);
+      results.days.get = (...args) => {lookups++; return get(...args);};
+    }
+    const start = performance.now();
+    for (const {position, step, expected} of queries) assert.equal(results.indexOf(position, step), expected);
+    return {ms: performance.now() - start, lookups};
+  }
+  console.log('RANK_ENV ' + JSON.stringify({node: process.version, cpu: require('node:os').cpus()[0]?.model}));
+  for (const size of [365, 2000, 10000]) {
+    sample(size, false);
+    const samples = Array.from({length: 5}, () => sample(size, false));
+    console.log('RANK_RESULT ' + JSON.stringify({size, samples, lookups: sample(size, true).lookups}));
+  }
+});
+
+test('search ranks stay exact after insert, recount, move, deletion and prune', () => {
+  const {FindResults} = environment().load('findResults');
+  const r = new FindResults();
+  const keys = ['2026-01-01', '2026-01-02', '2026-01-03', '2026-01-04'];
+  const model = new Map();
+  const set = (key, path, order, count, generation) => {
+    r.set(key, path, order, count, generation);
+    if (count > 0) model.set(path, {key, path, order, count, generation});
+    else model.delete(path);
+  };
+  const check = () => {
+    for (const step of [-1, 1]) {
+      const sorted = [...model.values()].sort((a, b) =>
+        step * a.key.localeCompare(b.key) || a.order - b.order || a.path.localeCompare(b.path));
+      let index = 0;
+      for (const note of sorted) {
+        for (let i = 0; i < note.count; i++) {
+          assert.equal(r.indexOf({key: note.key, path: note.path, index: i}, step), index++);
+        }
+        assert.equal(r.indexOf({key: note.key, path: note.path, index: note.count}, step), -1);
+        assert.equal(r.indexOf({key: note.key, path: note.path, index: -1}, step), -1);
+      }
+      assert.equal(r.total, index);
+      assert.equal(r.indexOf({key: keys[0], path: 'missing', index: 0}, step), -1);
+    }
+  };
+  check();
+  set(keys[3], 'd', 0, 7, 1); check();
+  set(keys[0], 'a', 0, 2, 1);
+  set(keys[0], 'a2', 1, 3, 1);
+  set(keys[1], 'b', 0, 5, 2);
+  set(keys[2], 'c', 0, 4, 2); check();
+  set(keys[1], 'b', 0, 1, 3); check();
+  set(keys[3], 'c', 1, 2, 3); check();
+  r.delete('a'); model.delete('a'); check();
+  r.prune(2);
+  for (const [path, note] of model) if (note.generation < 2) model.delete(path);
+  check();
+  r.clear(); model.clear(); check();
+});
+
 test('editor document supplies current text when its convenience getter breaks', () => {
   const e = environment(); const {RichEditor} = e.load('editor');
   const editor = Object.create(RichEditor.prototype);
@@ -203,6 +281,64 @@ test('undo during a delayed save leaves the final editor text on disk', async ()
   assert.equal(f.files.get(f.entry.path), 'original'); assert.equal(f.entry.isDirty, false);
 });
 
+test('benchmark recounting existing search results', () => {
+  const {FindResults} = environment().load('findResults');
+  function sample(size, instrument) {
+    const keys = Array.from({length: size}, (_, i) => new Date(Date.UTC(1970, 0, 1 + i)).toISOString().slice(0, 10));
+    const results = new FindResults();
+    for (const key of keys) results.set(key, key + '.md', 0, 2, 1);
+    let shifts = 0;
+    if (instrument) {
+      const splice = results.keys.splice.bind(results.keys);
+      results.keys.splice = (...args) => {shifts++; return splice(...args);};
+    }
+    const start = performance.now();
+    for (const key of keys) results.set(key, key + '.md', 0, 3, 2);
+    const ms = performance.now() - start;
+    results.prune(2);
+    assert.equal(results.total, size * 3);
+    assert.equal(results.indexOf(results.first(keys[Math.floor(size / 2)]), 1), Math.floor(size / 2) * 3);
+    assert.equal(results.indexOf(results.first(keys[Math.floor(size / 2)]), -1), (size - 1 - Math.floor(size / 2)) * 3);
+    if (instrument) assert.equal(shifts, 0);
+    return {ms, shifts};
+  }
+  console.log('RECOUNT_ENV ' + JSON.stringify({node: process.version, cpu: require('node:os').cpus()[0]?.model}));
+  for (const size of [365, 2000, 10000]) {
+    sample(size, false);
+    const samples = Array.from({length: 5}, () => sample(size, false));
+    console.log('RECOUNT_RESULT ' + JSON.stringify({size, samples, shifts: sample(size, true).shifts}));
+  }
+});
+
+test('search recount updates counts and generations without disturbing result order', () => {
+  const {FindResults} = environment().load('findResults');
+  const r = new FindResults();
+  const day = '2026-11-26', later = '2026-11-27';
+  r.set(day, 'b', 1, 2, 1);
+  r.set(day, 'a', 0, 1, 1);
+  r.set(later, 'c', 0, 3, 1);
+  r.set(day, 'b', 1, 5, 2);
+  r.set(day, 'a', 0, 1, 2); // unchanged count still updates generation
+  r.prune(2);
+  assert.equal(r.total, 6);
+  assert.equal(r.first(day).path, 'a');
+  assert.equal(r.last(day).path, 'b');
+  assert.equal(r.indexOf({key: day, path: 'b', index: 4}, 1), 5);
+  assert.equal(r.indexOf({key: day, path: 'b', index: 4}, -1), 5);
+  r.set(day, 'b', -1, 5, 3); // order changed
+  assert.equal(r.first(day).path, 'b');
+  r.set(later, 'b', 0, 4, 3); // path moved to another day
+  assert.equal(r.first(day).path, 'a');
+  assert.equal(r.first(later).path, 'b');
+  assert.equal(r.total, 5);
+  r.set(day, 'a', 0, 0, 3);
+  assert.equal(r.first(day), null);
+  assert.equal(r.total, 4);
+  r.delete('b');
+  assert.equal(r.total, 0);
+  assert.equal(r.firstKey(1), null);
+});
+
 test('cancelled search cannot select a result after an outstanding day load returns', async () => {
   const e = environment(); const {JournalFind} = e.load('find');
   let finish; let synced = 0; let selections = 0;
@@ -246,11 +382,204 @@ test('turning filters on and off still returns the correct dates and frees filte
   rules = []; index.ensureCurrent(); assert.equal(index.size, 2); assert.equal(index.pathKeys.size, 0);
 });
 
+test('benchmark incremental unfiltered index updates on synthetic vaults', () => {
+  const e = environment();
+  const {FilteredDailyNoteIndex} = e.load('filter');
+  const rules = [];
+  function sample(size) {
+    const files = new Map();
+    const keys = new Set();
+    let resolutions = 0;
+    let metadataLookups = 0;
+    let lastPath = null;
+    const base = {
+      version: 0, ensureCurrent() {},
+      changedSince(version) {
+        if (version === this.version) return [];
+        return version === this.version - 1 && lastPath ? [lastPath] : null;
+      },
+      keyForPath(path) {resolutions++; return path.slice(8, -3);},
+      has: key => keys.has(key),
+      get size() {return keys.size;},
+    };
+    const index = new FilteredDailyNoteIndex({
+      vault: {
+        getMarkdownFiles: () => [...files.values()],
+        getAbstractFileByPath: path => files.get(path) ?? null,
+      },
+      metadataCache: {getFileCache() {metadataLookups++; return null;}},
+    }, base, () => rules);
+    index.ensureCurrent();
+    const incoming = Array.from({length: size}, (_, i) => {
+      const key = new Date(Date.UTC(1970, 0, 1 + i)).toISOString().slice(0, 10);
+      return {key, file: new e.TFile('Journal/' + key + '.md')};
+    });
+    const start = performance.now();
+    for (const {key, file} of incoming) {
+      keys.add(key);
+      files.set(file.path, file);
+      lastPath = file.path;
+      base.version++;
+      index.ensureCurrent();
+    }
+    const ms = performance.now() - start;
+    assert.equal(index.size, size);
+    assert.equal(index.has(incoming[0].key), true);
+    assert.equal(index.has(incoming[size - 1].key), true);
+    const membershipEntries = ['keys', 'matchingPaths', 'pathKeys', 'matchingCounts']
+      .reduce((sum, field) => sum + index[field].size, 0);
+    return {ms, resolutions, metadataLookups, membershipEntries};
+  }
+  console.log('INCREMENTAL_ENV ' + JSON.stringify({node: process.version, cpu: require('node:os').cpus()[0]?.model}));
+  for (const size of [365, 2000, 10000]) {
+    sample(size);
+    const samples = Array.from({length: 5}, () => sample(size));
+    const median = {};
+    for (const key of Object.keys(samples[0])) {
+      median[key] = samples.map(row => row[key]).sort((a, b) => a - b)[2];
+    }
+    console.log('INCREMENTAL_RESULT ' + JSON.stringify({size, median, samples}));
+  }
+});
+
+test('unfiltered incremental projection stays empty and active rules rebuild correctly', () => {
+  const e = environment();
+  const {FilteredDailyNoteIndex} = e.load('filter');
+  const files = new Map();
+  const keys = new Set();
+  let rules = [];
+  let lastPath;
+  let lookups = 0;
+  const base = {
+    version: 0, ensureCurrent() {}, resolvedConfig: () => ({}),
+    changedSince(version) {
+      if (version === this.version) return [];
+      return version === this.version - 1 && lastPath ? [lastPath] : null;
+    },
+    keyForPath: path => path.slice(8, -3),
+    has: key => keys.has(key),
+    get size() {return keys.size;},
+  };
+  const index = new FilteredDailyNoteIndex({
+    vault: {getMarkdownFiles: () => [...files.values()], getAbstractFileByPath: path => files.get(path) ?? null},
+    metadataCache: {getFileCache(file) {lookups++; return {frontmatter: {include: file.path.includes('01.md')}};}},
+  }, base, () => rules);
+  function change(key, exists) {
+    const path = 'Journal/' + key + '.md';
+    if (exists) {files.set(path, new e.TFile(path)); keys.add(key);}
+    else {files.delete(path); keys.delete(key);}
+    lastPath = path; base.version++; index.ensureCurrent();
+    assert.equal(index.baseVersion, base.version);
+  }
+  const empty = () => {
+    for (const field of ['keys', 'matchingPaths', 'pathKeys', 'matchingCounts']) assert.equal(index[field].size, 0);
+  };
+  index.ensureCurrent();
+  change('2026-01-01', true);
+  change('2026-01-02', true);
+  assert.equal(index.size, 2);
+  assert.equal(index.has('2026-01-02'), true);
+  empty(); assert.equal(lookups, 0);
+  rules = [{kind: 'property', mode: 'include', property: 'include', value: true}];
+  index.ensureCurrent();
+  assert.equal(index.size, 1);
+  assert.equal(index.has('2026-01-01'), true);
+  assert.equal(index.has('2026-01-02'), false);
+  change('2026-01-01', false);
+  assert.equal(index.size, 0);
+  change('2026-02-01', true);
+  assert.equal(index.size, 1);
+  assert.equal(index.has('2026-02-01'), true);
+  rules = []; index.ensureCurrent(); empty();
+  const prior = lookups;
+  change('2026-02-01', false);
+  change('2026-02-02', true);
+  assert.equal(index.size, 2);
+  assert.equal(index.has('2026-02-01'), false);
+  assert.equal(index.has('2026-02-02'), true);
+  empty(); assert.equal(lookups, prior);
+});
+
 test('literal existence checks match full search semantics including Unicode and punctuation', () => {
   const e = environment(); const {containsLiteral, findLiteralRanges} = e.load('findText');
   for (const [text, query] of [['a[b a[b', 'a[b'], ['Kelvin K', 'k'], ['😀😀', '😀'], ['none', ''], ['Straße', 'SS'], ['A\na', 'a']]) {
     for (const sensitive of [true, false]) assert.equal(containsLiteral(text, query, sensitive), findLiteralRanges(text, query, sensitive).length > 0);
   }
+});
+
+test('benchmark pruning stale search results at different densities', () => {
+  const {FindResults} = environment().load('findResults');
+  function sample(size, stalePercent, instrument) {
+    const results = new FindResults();
+    const keys = Array.from({length: size}, (_, i) => new Date(Date.UTC(1970, 0, i + 1)).toISOString().slice(0, 10));
+    const survivors = [];
+    let total = 0;
+    for (let i = 0; i < size; i++) {
+      const key = keys[i];
+      const stale = i % 100 < stalePercent;
+      results.set(key, key + '.md', 0, 2, stale ? 1 : 2);
+      if (!stale) {survivors.push(key); total += 2;}
+      if (i % 17 === 0) {
+        results.set(key, key + ' evening.md', 1, 3, 2);
+        if (stale) survivors.push(key);
+        total += 3;
+      }
+    }
+    let shifts = 0;
+    if (instrument) {
+      const splice = results.keys.splice.bind(results.keys);
+      results.keys.splice = (...args) => {shifts++; return splice(...args);};
+    }
+    const start = performance.now();
+    results.prune(2);
+    const ms = performance.now() - start;
+    assert.equal(results.total, total);
+    assert.deepEqual(Array.from(results.keys), survivors);
+    assert.equal(results.noteKeys.size, size - keys.filter((_, i) => i % 100 < stalePercent).length + Math.ceil(size / 17));
+    assert.equal(results.firstKey(1), survivors[0] ?? null);
+    assert.equal(results.firstKey(-1), survivors.at(-1) ?? null);
+    for (let i = 0; i < size; i++) {
+      const key = keys[i];
+      assert.equal(results.note(key + '.md')?.count ?? 0, i % 100 < stalePercent ? 0 : 2);
+      if (i % 17 === 0) assert.equal(results.note(key + ' evening.md')?.count, 3);
+    }
+    if (instrument) assert.equal(shifts, 0);
+    return {ms, shifts};
+  }
+  console.log('PRUNE_ENV ' + JSON.stringify({node: process.version, cpu: require('node:os').cpus()[0]?.model}));
+  for (const size of [365, 2000, 10000]) {
+    for (const stalePercent of [0, 50, 90]) {
+      sample(size, stalePercent, false);
+      const samples = Array.from({length: 5}, () => sample(size, stalePercent, false));
+      console.log('PRUNE_RESULT ' + JSON.stringify({size, stalePercent, samples, shifts: sample(size, stalePercent, true).shifts}));
+    }
+  }
+});
+
+test('prune preserves order and navigation across partially surviving days and repeated cleanup', () => {
+  const {FindResults} = environment().load('findResults');
+  const r = new FindResults();
+  const a = '2026-01-01', b = '2026-01-02', c = '2026-01-03';
+  r.set(c, 'c', 0, 4, 1);
+  r.set(a, 'a3', 2, 3, 2);
+  r.set(a, 'a2', 1, 2, 1);
+  r.set(a, 'a1', 0, 1, 2);
+  r.set(b, 'b', 0, 2, 3);
+  r.prune(2);
+  assert.equal(r.total, 6);
+  assert.equal(r.note('a2'), null);
+  assert.equal(r.note('c'), null);
+  assert.equal(r.first(a).path, 'a1');
+  assert.equal(r.last(a).path, 'a3');
+  assert.equal(r.after(r.last(a), 1).path, 'b');
+  assert.equal(r.before(r.first(b), 1).path, 'a3');
+  assert.equal(r.indexOf(r.last(a), 1), 3);
+  assert.equal(r.indexOf(r.last(a), -1), 5);
+  r.prune(2); assert.equal(r.total, 6);
+  r.prune(3); assert.equal(r.total, 2); assert.equal(r.firstKey(1), b);
+  r.prune(4); assert.equal(r.total, 0); assert.equal(r.firstKey(-1), null);
+  assert.equal(r.noteKeys.size, 0); assert.equal(r.days.size, 0);
+  r.set(c, 'c', 0, 4, 5); assert.equal(r.total, 4); assert.equal(r.firstKey(1), c);
 });
 
 test('a late read cannot replace newer content from a metadata event', async () => {
@@ -266,6 +595,151 @@ test('a failed vault read leaves existing content intact', async () => {
   f.entry.host.app.vault.cachedRead = async () => {throw new Error('read failed')};
   await f.entry.reload(); assert.equal(f.entry.lastKnownContent, 'existing note');
   assert.equal(f.entry.editor.getValue(), 'existing note');
+});
+
+test('benchmark overlapping search reads of synthetic notes', async () => {
+  const e = environment();
+  const {FindCorpus} = e.load('findCorpus');
+  async function sample(size) {
+    let reads = 0;
+    const text = '---\r\nmarker: hidden\r\n---\r\n# Heading\r\nneedle 😀\r\n';
+    const expected = '# Heading\nneedle 😀\n';
+    const files = Array.from({length: size}, (_, i) => {
+      const file = new e.TFile('Journal/' + i + '.md');
+      file.stat = {mtime: 1, size: text.length};
+      return file;
+    });
+    const byPath = new Map(files.map(file => [file.path, file]));
+    const corpus = new FindCorpus({vault: {
+      cachedRead: async () => {reads++; return text;},
+      getAbstractFileByPath: path => byPath.get(path) ?? null,
+    }});
+    const release = corpus.retain();
+    const start = performance.now();
+    for (let i = 0; i < size; i += 6) {
+      const batch = files.slice(i, i + 6);
+      const bodies = await Promise.all(batch.flatMap(file =>
+        [corpus.read(file), corpus.read(file), corpus.read(file), corpus.read(file)]));
+      assert.ok(bodies.every(body => body === expected));
+    }
+    const ms = performance.now() - start;
+    assert.equal(reads, size);
+    assert.ok(files.every(file => corpus.peek(file) === expected));
+    release(); corpus.onunload();
+    assert.equal(e.timers.size, 0);
+    return {ms, reads};
+  }
+  console.log('SEARCH_ENV ' + JSON.stringify({node: process.version, cpu: require('node:os').cpus()[0]?.model}));
+  for (const size of [365, 2000, 10000]) {
+    await sample(size);
+    const samples = [];
+    for (let i = 0; i < 5; i++) samples.push(await sample(size));
+    console.log('SEARCH_RESULT ' + JSON.stringify({size, samples}));
+  }
+});
+
+function corpusFixture() {
+  const e = environment();
+  const {FindCorpus} = e.load('findCorpus');
+  const file = new e.TFile('Journal/2026-11-26.md');
+  file.stat = {mtime: 1, size: 10};
+  const files = new Map([[file.path, file]]);
+  const pending = [];
+  const corpus = new FindCorpus({vault: {
+    getAbstractFileByPath: path => files.get(path) ?? null,
+    cachedRead: target => new Promise((resolve, reject) => pending.push({target, resolve, reject})),
+  }});
+  const release = corpus.retain();
+  return {e, corpus, file, files, pending, release};
+}
+
+test('overlapping corpus reads share work, and a failed read can be retried', async () => {
+  const {corpus, file, pending, release, e} = corpusFixture();
+  const first = corpus.read(file), second = corpus.read(file);
+  assert.equal(pending.length, 1);
+  pending[0].reject(new Error('read failed'));
+  assert.equal(await first, null); assert.equal(await second, null);
+  const retry = corpus.read(file);
+  assert.equal(pending.length, 2);
+  pending[1].resolve('---\r\na: b\r\n---\r\n# Title\r\nneedle 😀');
+  assert.equal(await retry, '# Title\nneedle 😀');
+  assert.equal(corpus.peek(file), '# Title\nneedle 😀');
+  release(); corpus.onunload(); assert.equal(e.timers.size, 0);
+});
+
+test('a same-size edit starts a fresh read and late completion cannot replace it', async () => {
+  const {corpus, file, pending} = corpusFixture();
+  const old = corpus.read(file);
+  corpus.invalidate(file, [file.path]);
+  const fresh = corpus.read(file);
+  assert.equal(pending.length, 2);
+  pending[1].resolve('new body');
+  assert.equal(await fresh, 'new body');
+  pending[0].resolve('old body');
+  assert.equal(await old, 'new body');
+  assert.equal(corpus.peek(file), 'new body');
+  assert.equal(pending.length, 2);
+  corpus.onunload();
+});
+
+test('folder rename invalidates pending reads and deletion cannot resurrect a cache entry', async () => {
+  const {corpus, file, files, pending} = corpusFixture();
+  const oldPath = file.path;
+  const old = corpus.read(file);
+  files.delete(oldPath); file.path = 'Moved/2026-11-26.md'; files.set(file.path, file);
+  corpus.invalidateFolder(['Journal', 'Moved']);
+  const fresh = corpus.read(file);
+  pending[1].resolve('new body');
+  assert.equal(await fresh, 'new body');
+  pending[0].resolve('old body');
+  assert.equal(await old, 'new body');
+  assert.equal(corpus.texts.has(oldPath), false);
+  corpus.invalidate(file, [file.path]);
+  const deleted = corpus.read(file);
+  files.delete(file.path); corpus.invalidate(file, [file.path]);
+  pending[2].resolve('deleted');
+  assert.equal(await deleted, null);
+  assert.equal(corpus.peek(file), null);
+  corpus.onunload();
+});
+
+test('unloading the corpus clears outstanding reads without repopulating it', async () => {
+  const {corpus, file, pending} = corpusFixture();
+  const read = corpus.read(file);
+  corpus.onunload();
+  pending[0].resolve('late');
+  assert.equal(await read, null);
+  assert.equal(await corpus.read(file), null);
+  assert.equal(corpus.pending.size, 0);
+  assert.equal(corpus.peek(file), null);
+});
+
+test('a failed obsolete read cannot hide a newer successful result', async () => {
+  const {corpus, file, pending} = corpusFixture();
+  const old = corpus.read(file);
+  corpus.invalidate(file, [file.path]);
+  const fresh = corpus.read(file);
+  pending[1].resolve('new body');
+  assert.equal(await fresh, 'new body');
+  pending[0].reject(new Error('old revision failed'));
+  assert.equal(await old, 'new body');
+  assert.equal(corpus.peek(file), 'new body');
+  assert.equal(pending.length, 2);
+  corpus.onunload();
+});
+
+test('repeated invalidation does not return stale search text after retry exhaustion', async () => {
+  const {corpus, file, pending} = corpusFixture();
+  const read = corpus.read(file);
+  for (let i = 0; i < 3; i++) {
+    assert.equal(pending.length, i + 1);
+    corpus.invalidate(file, [file.path]);
+    pending[i].resolve('obsolete ' + i);
+    for (let j = 0; j < 8; j++) await Promise.resolve();
+  }
+  assert.equal(await read, null);
+  assert.equal(corpus.peek(file), null);
+  corpus.onunload();
 });
 
 test('closing a view while rebuild waits for saves cannot rebuild the closed tab', async () => {
@@ -284,6 +758,121 @@ test('only the newest concurrent rebuild proceeds after delayed saves', async ()
   pending[0](); pending[1](); await Promise.all([first, second]); assert.deepEqual(builds, ['second']);
 });
 
+test('benchmark alternate vocabulary forms across repeated month selections', {skip: process.env.JOURNAL_PERF !== '1'}, () => {
+  const {NewWordsMosaic} = environment().load('newWords');
+  const STEMS = 2000, WORDS = 100, SELECTIONS = 12;
+  function sample(size, instrument) {
+    const notes = [];
+    const model = new Map();
+    const first = new Map();
+    let calls = 0;
+    const statistics = {
+      stemCount: STEMS, wordCount: STEMS * 3,
+      stemOf(id) {if (instrument) calls++; return Math.floor(id / 3);},
+      word(id) {return 'form-' + id;},
+    };
+    for (let n = 0; n < size; n++) {
+      const ids = Uint32Array.from({length: WORDS}, (_, i) => ((n * 37 + i * 19) % STEMS) * 3 + ((n + i) % 3));
+      notes.push({month: Math.floor(n / 30), vocabulary: {status: 'ready', ids}});
+      for (const id of ids) {
+        const stem = Math.floor(id / 3);
+        if (!first.has(stem)) first.set(stem, id);
+        else if (first.get(stem) !== id) {
+          if (!model.has(stem)) model.set(stem, new Set());
+          model.get(stem).add('form-' + id);
+        }
+      }
+    }
+    const mosaic = new NewWordsMosaic({}, {statistics});
+    mosaic.notes = notes;
+    mosaic.updateTiles = () => {};
+    const startFold = performance.now();
+    mosaic.advance();
+    const foldMs = performance.now() - startFold;
+    assert.equal(mosaic.frontier, size);
+    assert.equal(mosaic.alternateSeen.length, 0);
+    const foldLookups = calls;
+    const queries = Array.from({length: SELECTIONS}, (_, i) =>
+      new Set(Array.from({length: i % 3 === 0 ? 20 : i % 3 === 1 ? 100 : 300}, (_, j) => (i * 113 + j * 7) % STEMS)));
+    const start = performance.now();
+    const results = queries.map(query => mosaic.otherForms(query));
+    const ms = performance.now() - start;
+    for (let i = 0; i < queries.length; i++) {
+      const actual = results[i], query = queries[i];
+      assert.equal(actual.size, [...query].filter(stem => model.has(stem)).length);
+      for (const stem of query) assert.deepEqual(Array.from(actual.get(stem) ?? []), Array.from(model.get(stem) ?? []));
+    }
+    if (instrument) assert.equal(calls - foldLookups, 0);
+    return {ms, foldMs, foldLookups, selectionLookups: calls - foldLookups,
+      alternateIds: mosaic.alternateForms ? [...mosaic.alternateForms.values()].reduce((n, ids) => n + ids.size, 0) : 0};
+  }
+  console.log('FORMS_ENV ' + JSON.stringify({node: process.version, cpu: require('node:os').cpus()[0]?.model}));
+  for (const size of [365, 2000, 10000]) {
+    sample(size, false);
+    const samples = Array.from({length: 5}, () => sample(size, false));
+    console.log('FORMS_RESULT ' + JSON.stringify({size, samples, operations: sample(size, true)}));
+  }
+});
+
+test('alternate vocabulary forms follow the active chronological fold and disappear on refresh', async () => {
+  const e = environment();
+  const {NewWordsMosaic} = e.load('newWords');
+  const a = new e.TFile('a.md'), b = new e.TFile('b.md'), c = new e.TFile('c.md');
+  const first = '2026-01-01', next = '2026-02-01', last = '2026-03-01';
+  const notes = new Map([[first, a], [next, b], [last, c]]);
+  const vocab = new Map([[a, {status: 'ready', ids: Uint32Array.from([1, 3, 0])}],
+    [b, {status: 'ready', ids: Uint32Array.from([2, 0, 4, 2])}], [c, {status: 'error'}]]);
+  const stats = {stemCount: 2, wordCount: 6, stemOf: id => Math.floor(id / 3), word: id => 'form-' + id,
+    peekVocabulary: file => vocab.get(file)};
+  const plugin = {statistics: stats, daily: {config: () => ({})},
+    index: {ensureCurrent() {}, keys: () => [...notes.keys()], pathsFor: key => [notes.get(key).path]},
+    app: {vault: {getAbstractFileByPath: path => [...notes.values()].find(file => file.path === path)}}};
+  const mosaic = new NewWordsMosaic({}, plugin);
+  mosaic.renderGrid = () => {};
+  mosaic.updateTiles = () => {};
+  mosaic.status = {setText() {}};
+  mosaic.renderWords = () => {};
+  await mosaic.refresh();
+  assert.equal(mosaic.frontier, 3);
+  assert.equal(mosaic.form[0], 1);
+  assert.equal(mosaic.uses[0], 2);
+  assert.deepEqual(Array.from(mosaic.otherForms(new Set([0])).get(0)), ['form-0', 'form-2']);
+  assert.deepEqual(Array.from(mosaic.otherForms(new Set([1])).get(1)), ['form-4']);
+  notes.delete(first);
+  await mosaic.refresh();
+  assert.equal(mosaic.frontier, 2);
+  assert.equal(mosaic.form[0], 2);
+  assert.equal(mosaic.uses[0], 1);
+  assert.deepEqual(Array.from(mosaic.otherForms(new Set([0])).get(0)), ['form-0']);
+  assert.equal(mosaic.otherForms(new Set([1])).has(1), false);
+  mosaic.onunload();
+  assert.equal(mosaic.alternateForms.size, 0);
+  assert.equal(mosaic.alternateSeen.length, 0);
+  assert.equal(e.timers.size, 0);
+});
+
+test('temporary alternate ID marks grow across partially read vocabulary and are released', () => {
+  const {NewWordsMosaic} = environment().load('newWords');
+  const stats = {stemCount: 2, wordCount: 3, stemOf: id => id < 3 ? 0 : 1, word: id => 'form-' + id};
+  const mosaic = new NewWordsMosaic({}, {statistics: stats});
+  mosaic.updateTiles = () => {};
+  mosaic.notes = [{month: 1, vocabulary: {status: 'ready', ids: Uint32Array.from([0, 1])}},
+    {month: 2, vocabulary: null}];
+  mosaic.advance();
+  assert.equal(mosaic.frontier, 1);
+  assert.ok(mosaic.alternateSeen.length >= 3);
+  assert.equal(mosaic.alternateSeen[1], 1);
+  stats.wordCount = 1202;
+  mosaic.notes[1].vocabulary = {status: 'ready', ids: Uint32Array.from([1, 2, 1200, 1201])};
+  mosaic.advance();
+  assert.equal(mosaic.frontier, 2);
+  assert.deepEqual(Array.from(mosaic.otherForms(new Set([0])).get(0)), ['form-1', 'form-2']);
+  assert.deepEqual(Array.from(mosaic.otherForms(new Set([1])).get(1)), ['form-1201']);
+  assert.equal(mosaic.alternateSeen.length, 0);
+  mosaic.advance();
+  assert.equal(mosaic.alternateSeen.length, 0);
+});
+
 test('failed embedded-editor initialization unloads its instance before fallback', () => {
   const e = environment(); const {RichEditor} = e.load('editor'); let destroyed = 0; let unloaded = 0;
   class BrokenEditor {get() {return ''} set() {} load() {throw new Error('load failed')} destroy() {destroyed++} unload() {unloaded++}}
@@ -296,6 +885,20 @@ test('failed editor-constructor probe still unloads its temporary embed', () => 
   const e = environment(); const {resolveEditorCtor} = e.load('editor'); let unloaded = 0;
   const app = {embedRegistry: {embedByExtension: {md: () => ({showEditor() {throw new Error('probe failed')}, unload() {unloaded++}})}}};
   assert.equal(resolveEditorCtor(app), null); assert.equal(unloaded, 1);
+});
+
+test('nearest-day traversal preserves sparse date order, missing anchors and ties in both directions', () => {
+  const {keysAround} = environment().load('noteIndex');
+  const keys = ['1999-12-31', '2000-01-01', '2000-02-28', '2000-02-29', '2000-03-01', '2000-03-02', '2026-11-25'];
+  for (const key of ['1900-01-01', ...keys, '2000-02-27', '2000-03-03', '2050-01-01']) {
+    for (const direction of [-1, 1]) {
+      const expected = keys.filter(candidate => candidate !== key).sort((a, b) =>
+        Math.abs(Date.parse(a) - Date.parse(key)) - Math.abs(Date.parse(b) - Date.parse(key)) ||
+        direction * (Date.parse(b) - Date.parse(a)));
+      assert.deepEqual(Array.from(keysAround(keys, key, direction)), expected);
+    }
+  }
+  assert.deepEqual(Array.from(keysAround([], '2000-02-29', 1)), []);
 });
 
 test('folder configuration changes rebuild without retargeting dirty sections first', () => {
@@ -324,6 +927,52 @@ test('failed external editor replacement cannot overwrite the newer vault conten
   await f.entry.flush();
   assert.equal(f.files.get(f.entry.path), 'new vault text'); assert.equal(f.writes(), 0);
   assert.equal(e.timers.size, 1);
+});
+
+test('benchmark vocabulary prose preparation across representative note types', {skip: process.env.JOURNAL_PERF !== '1'}, () => {
+  const {proseOf} = environment().load('vocabulary');
+  const plain = 'A quiet morning by the river. I walked home with a friend and cooked dinner. Café 中文 𐐀.\n'.repeat(12);
+  const marked = '# Today\n\n> A quote\n> ordinary words.\n' +
+    '> ~~~js\n> hidden code\n> ~~~\n\n    hidden indented code\n\n- a list item\n    nested prose\n' +
+    'Words and \x60inline code\x60 plus [[hidden link]] and [ref]\n[ref]: https://example.com\n' +
+    'mailto@example.com @name #tag\n' + plain;
+  const cases = [
+    ['plain', plain],
+    ['markup', marked],
+    ['email', plain + 'Reach out to person@example.com or @friend.\n'],
+  ];
+  function sample(size, body) {
+    const notes = Array.from({length: size}, (_, i) => '---\nnumber: ' + i + '\n---\n' + body + 'Day ' + i);
+    const expected = notes.map(proseOf);
+    let length = 0;
+    const start = performance.now();
+    for (let i = 0; i < notes.length; i++) {
+      const text = proseOf(notes[i]);
+      assert.equal(text, expected[i]);
+      length += text.length;
+    }
+    const ms = performance.now() - start;
+    assert.ok(length > 0);
+    return ms;
+  }
+  console.log('PROSE_ENV ' + JSON.stringify({node: process.version, cpu: require('node:os').cpus()[0]?.model}));
+  for (const size of [365, 2000, 10000]) {
+    for (const [kind, body] of cases) {
+      sample(size, body);
+      const samples = Array.from({length: 5}, () => sample(size, body));
+      console.log('PROSE_RESULT ' + JSON.stringify({size, kind, samples}));
+    }
+  }
+});
+
+test('vocabulary email shortcut preserves whitespace and removes complete handle tokens', async () => {
+  const {proseOf, noteWords} = environment().load('vocabulary');
+  assert.equal(proseOf('plain café 中文\ttext'), 'plain café 中文\ttext');
+  assert.equal(proseOf('before [[x@y]] after'), 'before   after');
+  assert.equal(proseOf('---\nemail: a@example.com\n---\nplain words'), 'plain words');
+  assert.equal(proseOf('before a@example.com @friend\tend'), 'before    \tend');
+  assert.equal(proseOf('before\u00a0handle@中\u00a0after'), 'before\u00a0 \u00a0after');
+  assert.deepEqual(Array.from(await noteWords('plain café foo@example.com @friend end', () => true)), ['plain', 'café', 'end']);
 });
 
 test('an unreadable editor survives teardown until its text can be captured', async () => {
@@ -466,4 +1115,76 @@ test('returning an editor to preview mode clears its previous height hold', () =
   f.entry.bodyEl.appendChild = () => {};
   f.entry.applyPreview({component: {}, container: {}}, 'note body');
   assert.equal(f.minimum(), 0); assert.equal(f.entry.editor, null);
+});
+
+test('benchmark statistics word counting in synthetic notes', async () => {
+  const e = environment();
+  const {JournalStatistics} = e.load('statistics');
+  const body = ('Hello world! 123 … -- café 中文 𐐀 mixed-token emoji😀  \t\n').repeat(24);
+  const text = '---\nignored: words\n---\n' + body;
+  const expected = body.split(/\s+/u).filter(token => /[\p{L}\p{N}]/u.test(token)).length;
+  async function sample(size) {
+    const files = new Map();
+    for (let i = 0; i < size; i++) {
+      const file = new e.TFile('Journal/' + i + '.md');
+      file.stat = {mtime: 1, size: text.length};
+      files.set(file.path, file);
+    }
+    let reads = 0;
+    const stats = new JournalStatistics({vault: {
+      cachedRead: async () => {reads++; return text;},
+      getAbstractFileByPath: path => files.get(path),
+    }});
+    const start = performance.now();
+    for (const file of files.values()) {
+      const result = await stats.count(file, () => true);
+      assert.equal(result?.status, 'ready');
+      assert.equal(result.words, expected);
+    }
+    const ms = performance.now() - start;
+    assert.equal(reads, size);
+    stats.onunload();
+    return {ms, reads};
+  }
+  console.log('COUNT_ENV ' + JSON.stringify({node: process.version, cpu: require('node:os').cpus()[0]?.model}));
+  for (const size of [365, 2000, 10000]) {
+    await sample(size);
+    const samples = [];
+    for (let i = 0; i < 5; i++) samples.push(await sample(size));
+    console.log('COUNT_RESULT ' + JSON.stringify({size, samples}));
+  }
+});
+
+test('statistics word counting preserves Unicode and whitespace across chunk boundaries', async () => {
+  const e = environment();
+  const {JournalStatistics} = e.load('statistics');
+  const cases = [
+    '!'.repeat(32767) + '𐐀 end',
+    'a'.repeat(32768) + 'b end',
+    'a'.repeat(32767) + ' ' + 'next',
+    ' '.repeat(32768) + '😀  中文 123',
+    '!'.repeat(65536) + ' end',
+    ' \u00a0\u2028\ufeff ',
+  ];
+  for (const body of cases) {
+    const text = '---\nignore: words\n---\n' + body;
+    const file = new e.TFile('Journal/today.md');
+    file.stat = {mtime: 1, size: text.length};
+    const stats = new JournalStatistics({vault: {
+      cachedRead: async () => text,
+      getAbstractFileByPath: () => file,
+    }});
+    let finished = false;
+    const pending = stats.count(file, () => true).finally(() => {finished = true;});
+    for (let i = 0; i < 100 && !finished; i++) {
+      await Promise.resolve();
+      for (const [id, timer] of e.timers) {e.timers.delete(id); timer.fn();}
+    }
+    assert.ok(finished, 'count must settle after bounded timer yields');
+    const result = await pending;
+    assert.equal(result?.status, 'ready');
+    assert.equal(result.words, body.split(/\s+/u).filter(token => /[\p{L}\p{N}]/u.test(token)).length);
+    stats.onunload();
+    assert.equal(e.timers.size, 0);
+  }
 });
