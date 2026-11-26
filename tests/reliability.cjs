@@ -246,6 +246,54 @@ test('turning filters on and off still returns the correct dates and frees filte
   rules = []; index.ensureCurrent(); assert.equal(index.size, 2); assert.equal(index.pathKeys.size, 0);
 });
 
+test('benchmark pruning stale search results at different densities', () => {
+  const {FindResults} = environment().load('findResults');
+  function sample(size, stalePercent, instrument) {
+    const results = new FindResults();
+    const keys = Array.from({length: size}, (_, i) => new Date(Date.UTC(1970, 0, i + 1)).toISOString().slice(0, 10));
+    const survivors = [];
+    let total = 0;
+    for (let i = 0; i < size; i++) {
+      const key = keys[i];
+      const stale = i % 100 < stalePercent;
+      results.set(key, key + '.md', 0, 2, stale ? 1 : 2);
+      if (!stale) {survivors.push(key); total += 2;}
+      if (i % 17 === 0) {
+        results.set(key, key + ' evening.md', 1, 3, 2);
+        if (stale) survivors.push(key);
+        total += 3;
+      }
+    }
+    let shifts = 0;
+    if (instrument) {
+      const splice = results.keys.splice.bind(results.keys);
+      results.keys.splice = (...args) => {shifts++; return splice(...args);};
+    }
+    const start = performance.now();
+    results.prune(2);
+    const ms = performance.now() - start;
+    assert.equal(results.total, total);
+    assert.deepEqual(Array.from(results.keys), survivors);
+    assert.equal(results.noteKeys.size, size - keys.filter((_, i) => i % 100 < stalePercent).length + Math.ceil(size / 17));
+    assert.equal(results.firstKey(1), survivors[0] ?? null);
+    assert.equal(results.firstKey(-1), survivors.at(-1) ?? null);
+    for (let i = 0; i < size; i++) {
+      const key = keys[i];
+      assert.equal(results.note(key + '.md')?.count ?? 0, i % 100 < stalePercent ? 0 : 2);
+      if (i % 17 === 0) assert.equal(results.note(key + ' evening.md')?.count, 3);
+    }
+    return {ms, shifts};
+  }
+  console.log('PRUNE_ENV ' + JSON.stringify({node: process.version, cpu: require('node:os').cpus()[0]?.model}));
+  for (const size of [365, 2000, 10000]) {
+    for (const stalePercent of [0, 50, 90]) {
+      sample(size, stalePercent, false);
+      const samples = Array.from({length: 5}, () => sample(size, stalePercent, false));
+      console.log('PRUNE_RESULT ' + JSON.stringify({size, stalePercent, samples, shifts: sample(size, stalePercent, true).shifts}));
+    }
+  }
+});
+
 test('literal existence checks match full search semantics including Unicode and punctuation', () => {
   const e = environment(); const {containsLiteral, findLiteralRanges} = e.load('findText');
   for (const [text, query] of [['a[b a[b', 'a[b'], ['Kelvin K', 'k'], ['😀😀', '😀'], ['none', ''], ['Straße', 'SS'], ['A\na', 'a']]) {
