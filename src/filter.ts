@@ -184,6 +184,7 @@ export class FilteredDailyNoteIndex implements OrderedDayIndex {
 			return;
 		}
 		this.baseVersion = this.base.version;
+		if (this.signature === "[]") return;
 		for (const path of changed) this.place(path);
 	}
 
