@@ -133,6 +133,43 @@ test('a failed internal editor read never saves an empty body and retries captur
   assert.equal(e.timers.size, 0);
 });
 
+test('benchmark search match rank across the journal', () => {
+  const {FindResults} = environment().load('findResults');
+  function sample(size, instrument) {
+    const results = new FindResults();
+    const keys = Array.from({length: size}, (_, i) => new Date(Date.UTC(1970, 0, i + 1)).toISOString().slice(0, 10));
+    const prefix = [0];
+    for (let i = 0; i < size; i++) {
+      const count = i % 7 + 1;
+      results.set(keys[i], keys[i] + '.md', 0, count, 1);
+      results.set(keys[i], keys[i] + ' evening.md', 1, 2, 1);
+      prefix.push(prefix[i] + count + 2);
+    }
+    const queries = [];
+    for (let i = 0; i < 1000; i++) {
+      const at = i % 4 === 0 ? 0 : i % 4 === 1 ? size - 1 : Math.floor(((i * 7919) % size));
+      const step = i % 2 ? -1 : 1;
+      const path = keys[at] + ' evening.md';
+      const expected = (step > 0 ? prefix[at] : prefix[size] - prefix[at + 1]) + (at % 7 + 1) + 1;
+      queries.push({position: {key: keys[at], path, index: 1}, step, expected});
+    }
+    let lookups = 0;
+    if (instrument) {
+      const get = results.days.get.bind(results.days);
+      results.days.get = (...args) => {lookups++; return get(...args);};
+    }
+    const start = performance.now();
+    for (const {position, step, expected} of queries) assert.equal(results.indexOf(position, step), expected);
+    return {ms: performance.now() - start, lookups};
+  }
+  console.log('RANK_ENV ' + JSON.stringify({node: process.version, cpu: require('node:os').cpus()[0]?.model}));
+  for (const size of [365, 2000, 10000]) {
+    sample(size, false);
+    const samples = Array.from({length: 5}, () => sample(size, false));
+    console.log('RANK_RESULT ' + JSON.stringify({size, samples, lookups: sample(size, true).lookups}));
+  }
+});
+
 test('editor document supplies current text when its convenience getter breaks', () => {
   const e = environment(); const {RichEditor} = e.load('editor');
   const editor = Object.create(RichEditor.prototype);
