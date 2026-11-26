@@ -8,7 +8,7 @@ const {test} = require('node:test');
 const ts = require('typescript');
 const root = path.resolve(__dirname, '..');
 
-function environment() {
+function environment(overrides = {}) {
   const notices = [];
   const timers = new Map();
   let timerId = 0;
@@ -40,7 +40,7 @@ function environment() {
     if (modules.has(file)) return modules.get(file).exports;
     const module = {exports: {}};
     modules.set(file, module);
-    let source = fs.readFileSync(file, 'utf8');
+    let source = overrides[name] ?? fs.readFileSync(file, 'utf8');
     if (name === 'editor') source += '\nexport { RichEditor, resolveEditorCtor };';
     const js = ts.transpileModule(source, {compilerOptions: {module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020}}).outputText;
     const customRequire = spec => spec === 'obsidian' ? obsidian : spec.startsWith('.') ? load(path.basename(spec)) : require(spec);
@@ -469,11 +469,18 @@ test('returning an editor to preview mode clears its previous height hold', () =
 });
 
 test('benchmark recounting existing search results', () => {
-  const {FindResults} = environment().load('findResults');
-  function sample(size, instrument) {
+  const candidate = fs.readFileSync(path.join(root, 'src', 'findResults.ts'), 'utf8');
+  const baseline = candidate.replace("\t\tconst previousKey = this.noteKeys.get(path);\n\t\tif (previousKey !== undefined) {\n\t\t\tif (previousKey === key && count > 0) {\n\t\t\t\tconst day = this.days.get(key);\n\t\t\t\tconst note = day?.notes.find((candidate) => candidate.path === path);\n\t\t\t\tif (day && note && note.order === order) {\n\t\t\t\t\tconst delta = count - note.count;\n\t\t\t\t\tnote.count = count;\n\t\t\t\t\tnote.generation = generation;\n\t\t\t\t\tday.count += delta;\n\t\t\t\t\tthis.total += delta;\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t}\n\t\t\tthis.delete(path);\n\t\t}\n\t\tif (count <= 0) return;", "\t\tthis.delete(path);\n\t\tif (count <= 0) return;");
+  assert.notEqual(baseline, candidate);
+  const hash = require('node:crypto').createHash('sha1').update('blob ' + Buffer.byteLength(baseline) + '\0').update(baseline).digest('hex');
+  assert.equal(hash, "a0508c7f1f0efe13417f3e0c2976217da5d6692a");
+  const variants = [baseline, candidate, candidate, baseline].map(source => environment({findResults: source}).load('findResults').FindResults);
+  function sample(size, instrument, FindResults) {
     const keys = Array.from({length: size}, (_, i) => new Date(Date.UTC(1970, 0, 1 + i)).toISOString().slice(0, 10));
     const results = new FindResults();
+    const coldStart = performance.now();
     for (const key of keys) results.set(key, key + '.md', 0, 2, 1);
+    const coldMs = performance.now() - coldStart;
     let shifts = 0;
     if (instrument) {
       const splice = results.keys.splice.bind(results.keys);
@@ -486,12 +493,43 @@ test('benchmark recounting existing search results', () => {
     assert.equal(results.total, size * 3);
     assert.equal(results.indexOf(results.first(keys[Math.floor(size / 2)]), 1), Math.floor(size / 2) * 3);
     assert.equal(results.indexOf(results.first(keys[Math.floor(size / 2)]), -1), (size - 1 - Math.floor(size / 2)) * 3);
-    return {ms, shifts};
+    return {ms, coldMs, shifts};
   }
   console.log('RECOUNT_ENV ' + JSON.stringify({node: process.version, cpu: require('node:os').cpus()[0]?.model}));
   for (const size of [365, 2000, 10000]) {
-    sample(size, false);
-    const samples = Array.from({length: 5}, () => sample(size, false));
-    console.log('RECOUNT_RESULT ' + JSON.stringify({size, samples, shifts: sample(size, true).shifts}));
+    for (const [i, FindResults] of variants.entries()) {
+      sample(size, false, FindResults);
+      const samples = Array.from({length: 5}, () => sample(size, false, FindResults));
+      console.log('RECOUNT_RESULT ' + JSON.stringify({size, variant: i === 0 || i === 3 ? 'baseline' : 'candidate', samples, shifts: sample(size, true, FindResults).shifts}));
+    }
   }
+});
+
+test('search recount updates counts and generations without disturbing result order', () => {
+  const {FindResults} = environment().load('findResults');
+  const r = new FindResults();
+  const day = '2026-11-26', later = '2026-11-27';
+  r.set(day, 'b', 1, 2, 1);
+  r.set(day, 'a', 0, 1, 1);
+  r.set(later, 'c', 0, 3, 1);
+  r.set(day, 'b', 1, 5, 2);
+  r.set(day, 'a', 0, 1, 2); // unchanged count still updates generation
+  r.prune(2);
+  assert.equal(r.total, 6);
+  assert.equal(r.first(day).path, 'a');
+  assert.equal(r.last(day).path, 'b');
+  assert.equal(r.indexOf({key: day, path: 'b', index: 4}, 1), 5);
+  assert.equal(r.indexOf({key: day, path: 'b', index: 4}, -1), 5);
+  r.set(day, 'b', -1, 5, 3); // order changed
+  assert.equal(r.first(day).path, 'b');
+  r.set(later, 'b', 0, 4, 3); // path moved to another day
+  assert.equal(r.first(day).path, 'a');
+  assert.equal(r.first(later).path, 'b');
+  assert.equal(r.total, 5);
+  r.set(day, 'a', 0, 0, 3);
+  assert.equal(r.first(day), null);
+  assert.equal(r.total, 4);
+  r.delete('b');
+  assert.equal(r.total, 0);
+  assert.equal(r.firstKey(1), null);
 });
