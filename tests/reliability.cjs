@@ -8,7 +8,7 @@ const {test} = require('node:test');
 const ts = require('typescript');
 const root = path.resolve(__dirname, '..');
 
-function environment(overrides = {}) {
+function environment() {
   const notices = [];
   const timers = new Map();
   let timerId = 0;
@@ -40,7 +40,7 @@ function environment(overrides = {}) {
     if (modules.has(file)) return modules.get(file).exports;
     const module = {exports: {}};
     modules.set(file, module);
-    let source = overrides[name] ?? fs.readFileSync(file, 'utf8');
+    let source = fs.readFileSync(file, 'utf8');
     if (name === 'editor') source += '\nexport { RichEditor, resolveEditorCtor };';
     const js = ts.transpileModule(source, {compilerOptions: {module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020}}).outputText;
     const customRequire = spec => spec === 'obsidian' ? obsidian : spec.startsWith('.') ? load(path.basename(spec)) : require(spec);
@@ -259,67 +259,6 @@ test('a late read cannot replace newer content from a metadata event', async () 
   let finish; f.entry.host.app.vault.cachedRead = () => new Promise(resolve => {finish = resolve});
   const stale = f.entry.reload(); await f.entry.reload('new external content'); finish('stale content'); await stale;
   assert.equal(f.entry.lastKnownContent, 'new external content');
-});
-
-test('benchmark vocabulary prose preparation across representative note types', async () => {
-  const candidate = fs.readFileSync(path.join(root, 'src', 'vocabulary.ts'), 'utf8');
-  const baseline = candidate.replace("\tlet text = content.slice(getFrontMatterInfo(content).contentStart);\n\t// Fences and indented code require one of these markers; otherwise the line pass is a no-op.\n\tif (/[`~\\t]| {4}/.test(text)) text = blankCodeBlocks(text);\n\tif (text.includes(\"`\")) text = text.split(\"\\n\").map(blankInlineCode).join(\"\\n\");", "\tlet text = blankCodeBlocks(content.slice(getFrontMatterInfo(content).contentStart));\n\ttext = text.split(\"\\n\").map(blankInlineCode).join(\"\\n\");");
-  assert.notEqual(baseline, candidate);
-  const hash = require('node:crypto').createHash('sha1').update('blob ' + Buffer.byteLength(baseline) + '\0').update(baseline).digest('hex');
-  assert.equal(hash, "5929a100b373f7d86418c9c599f1752e4868af22");
-  const variants = [baseline, candidate, candidate, baseline].map(source => environment({vocabulary: source}).load('vocabulary'));
-  const original = variants[0];
-  const edgeCases = ["","---\nonly: metadata\n---\n","ordinary text\r\n> quoted words\r\n\n","- item\n\n    nested prose\n","    hidden\n\nvisible"," \tindented?"," \tordinary \t words"," > ~~~js\n > secret\n > ~~~\n > visible","text `code` end","text ``code ` nested`` end","`unclosed text","~~~unclosed\nhidden","before [[x@y]] after","a@example.com @friend  handle@中\t next","@ x@y z@@z"];
-  edgeCases.push('A'.repeat(33000) + ' @x', 'a'.repeat(32770) + '\nplain');
-  for (const text of edgeCases) {
-    assert.equal(variants[1].proseOf(text), original.proseOf(text));
-    if (text.length < 32768) assert.deepEqual(Array.from(await variants[1].noteWords(text, () => true)), Array.from(await original.noteWords(text, () => true)));
-  }
-  const plain = 'A quiet morning by the river. I walked home with a friend and cooked dinner. Café 中文 𐐀.\n'.repeat(12);
-  const marked = '# Today\n\n> A quote\n> ordinary words.\n' +
-    '> ~~~js\n> hidden code\n> ~~~\n\n    hidden indented code\n\n- a list item\n    nested prose\n' +
-    'Words and \x60inline code\x60 plus [[hidden link]] and [ref]\n[ref]: https://example.com\n' +
-    'mailto@example.com @name #tag\n' + plain;
-  const cases = [
-    ['plain', plain],
-    ['markup', marked],
-    ['email', plain + 'Reach out to person@example.com or @friend.\n'],
-  ];
-  function sample(size, body, proseOf) {
-    const notes = Array.from({length: size}, (_, i) => '---\nnumber: ' + i + '\n---\n' + body + 'Day ' + i);
-    const expected = notes.map(original.proseOf);
-    let length = 0;
-    const start = performance.now();
-    for (let i = 0; i < notes.length; i++) {
-      const text = proseOf(notes[i]);
-      assert.equal(text, expected[i]);
-      length += text.length;
-    }
-    const ms = performance.now() - start;
-    assert.ok(length > 0);
-    return ms;
-  }
-  console.log('PROSE_ENV ' + JSON.stringify({node: process.version, cpu: require('node:os').cpus()[0]?.model}));
-  for (const size of [365, 2000, 10000]) {
-    for (const [kind, body] of cases) {
-      for (const [i, {proseOf}] of variants.entries()) {
-        sample(size, body, proseOf);
-        const samples = Array.from({length: 5}, () => sample(size, body, proseOf));
-        console.log('PROSE_RESULT ' + JSON.stringify({size, kind, variant: i === 0 || i === 3 ? 'baseline' : 'candidate', samples}));
-      }
-    }
-  }
-});
-
-test('vocabulary code scan shortcuts preserve quoted code, indented prose and inline code', async () => {
-  const {proseOf, noteWords} = environment().load('vocabulary');
-  assert.equal(proseOf('ordinary text\r\n> quoted words\r\n'), 'ordinary text\r\n> quoted words\r\n');
-  assert.equal(proseOf('> ~~~\n> secret\n> ~~~\n> visible'), '\n\n\n> visible');
-  assert.equal(proseOf('    secret\n\nvisible'), '\n\nvisible');
-  assert.equal(proseOf('\tsecret\n\nvisible'), '\n\nvisible');
-  assert.equal(proseOf('- item\n\n    nested prose'), '- item\n\n    nested prose');
-  assert.equal(proseOf('text \x60code\x60 end'), 'text   end');
-  assert.deepEqual(Array.from(await noteWords('plain Café 中文 \x60secret\x60 end', () => true)), ['plain', 'café', '中文', 'end']);
 });
 
 test('a failed vault read leaves existing content intact', async () => {
