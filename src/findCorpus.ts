@@ -3,7 +3,7 @@ import { editorBody } from "./noteBody";
 
 /** How long note texts outlive the last find bar that used them (ms). */
 const RELEASE_DELAY = 5 * 60 * 1000;
-/** Reads retried when the note changes while being read, before settling for what came back. */
+/** Reads retried when the note changes while being read, before using only a current cached value. */
 const READ_ATTEMPTS = 3;
 
 interface PendingRead {
@@ -104,7 +104,7 @@ export class FindCorpus extends Component {
 			const { mtime, size } = file.stat;
 			const revision = this.revisions.get(file) ?? 0;
 			this.revisions.set(file, revision);
-			let text: string;
+			let text: string | null = null;
 			let read = this.pending.get(file);
 			try {
 				if (!read || read.path !== path || read.mtime !== mtime || read.size !== size || read.revision !== revision) {
@@ -114,7 +114,6 @@ export class FindCorpus extends Component {
 				text = await read.promise;
 			} catch (error) {
 				console.warn(`Journal View: could not search ${path}`, error);
-				return null;
 			} finally {
 				if (this.pending.get(file) === read) this.pending.delete(file);
 			}
@@ -124,10 +123,11 @@ export class FindCorpus extends Component {
 				file.path === path &&
 				file.stat.mtime === mtime &&
 				file.stat.size === size;
-			if (unchanged && !this.closed && this.holds > 0) {
+			if (unchanged && text !== null && this.holds > 0) {
 				this.texts.set(path, { file, mtime, size, text });
 			}
-			if (unchanged || attempt + 1 >= READ_ATTEMPTS) return text;
+			if (unchanged) return text;
+			if (attempt + 1 >= READ_ATTEMPTS) return this.peek(file);
 		}
 	}
 
