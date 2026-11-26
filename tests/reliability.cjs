@@ -8,7 +8,7 @@ const {test} = require('node:test');
 const ts = require('typescript');
 const root = path.resolve(__dirname, '..');
 
-function environment() {
+function environment(overrides = {}) {
   const notices = [];
   const timers = new Map();
   let timerId = 0;
@@ -40,7 +40,7 @@ function environment() {
     if (modules.has(file)) return modules.get(file).exports;
     const module = {exports: {}};
     modules.set(file, module);
-    let source = fs.readFileSync(file, 'utf8');
+    let source = overrides[name] ?? fs.readFileSync(file, 'utf8');
     if (name === 'editor') source += '\nexport { RichEditor, resolveEditorCtor };';
     const js = ts.transpileModule(source, {compilerOptions: {module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020}}).outputText;
     const customRequire = spec => spec === 'obsidian' ? obsidian : spec.startsWith('.') ? load(path.basename(spec)) : require(spec);
@@ -326,8 +326,20 @@ test('failed external editor replacement cannot overwrite the newer vault conten
   assert.equal(e.timers.size, 1);
 });
 
-test('benchmark vocabulary prose preparation across representative note types', () => {
-  const {proseOf} = environment().load('vocabulary');
+test('benchmark vocabulary prose preparation across representative note types', async () => {
+  const candidate = fs.readFileSync(path.join(root, 'src', 'vocabulary.ts'), 'utf8');
+  const baseline = candidate.replace("\treturn text.includes(\"@\") ? text.replace(/\\S+/g, (token) => token.includes(\"@\") ? \" \" : token) : text;", "\treturn text.replace(/\\S+/g, (token) => token.includes(\"@\") ? \" \" : token);");
+  assert.notEqual(baseline, candidate);
+  const hash = require('node:crypto').createHash('sha1').update('blob ' + Buffer.byteLength(baseline) + '\0').update(baseline).digest('hex');
+  assert.equal(hash, "5929a100b373f7d86418c9c599f1752e4868af22");
+  const variants = [baseline, candidate, candidate, baseline].map(source => environment({vocabulary: source}).load('vocabulary'));
+  const original = variants[0];
+  const edgeCases = ["","---\nonly: metadata\n---\n","ordinary text\r\n> quoted words\r\n\n","- item\n\n    nested prose\n","    hidden\n\nvisible"," \tindented?"," \tordinary \t words"," > ~~~js\n > secret\n > ~~~\n > visible","text `code` end","text ``code ` nested`` end","`unclosed text","~~~unclosed\nhidden","before [[x@y]] after","a@example.com @friend  handle@中\t next","@ x@y z@@z"];
+  edgeCases.push('A'.repeat(33000) + ' @x', 'a'.repeat(32770) + '\nplain');
+  for (const text of edgeCases) {
+    assert.equal(variants[1].proseOf(text), original.proseOf(text));
+    if (text.length < 32768) assert.deepEqual(Array.from(await variants[1].noteWords(text, () => true)), Array.from(await original.noteWords(text, () => true)));
+  }
   const plain = 'A quiet morning by the river. I walked home with a friend and cooked dinner. Café 中文 𐐀.\n'.repeat(12);
   const marked = '# Today\n\n> A quote\n> ordinary words.\n' +
     '> ~~~js\n> hidden code\n> ~~~\n\n    hidden indented code\n\n- a list item\n    nested prose\n' +
@@ -338,9 +350,9 @@ test('benchmark vocabulary prose preparation across representative note types', 
     ['markup', marked],
     ['email', plain + 'Reach out to person@example.com or @friend.\n'],
   ];
-  function sample(size, body) {
+  function sample(size, body, proseOf) {
     const notes = Array.from({length: size}, (_, i) => '---\nnumber: ' + i + '\n---\n' + body + 'Day ' + i);
-    const expected = notes.map(proseOf);
+    const expected = notes.map(original.proseOf);
     let length = 0;
     const start = performance.now();
     for (let i = 0; i < notes.length; i++) {
@@ -355,11 +367,22 @@ test('benchmark vocabulary prose preparation across representative note types', 
   console.log('PROSE_ENV ' + JSON.stringify({node: process.version, cpu: require('node:os').cpus()[0]?.model}));
   for (const size of [365, 2000, 10000]) {
     for (const [kind, body] of cases) {
-      sample(size, body);
-      const samples = Array.from({length: 5}, () => sample(size, body));
-      console.log('PROSE_RESULT ' + JSON.stringify({size, kind, samples}));
+      for (const [i, {proseOf}] of variants.entries()) {
+        sample(size, body, proseOf);
+        const samples = Array.from({length: 5}, () => sample(size, body, proseOf));
+        console.log('PROSE_RESULT ' + JSON.stringify({size, kind, variant: i === 0 || i === 3 ? 'baseline' : 'candidate', samples}));
+      }
     }
   }
+});
+
+test('vocabulary email shortcut preserves whitespace and removes complete handle tokens', async () => {
+  const {proseOf, noteWords} = environment().load('vocabulary');
+  assert.equal(proseOf('plain café 中文\ttext'), 'plain café 中文\ttext');
+  assert.equal(proseOf('before [[x@y]] after'), 'before   after');
+  assert.equal(proseOf('before a@example.com @friend\tend'), 'before    \tend');
+  assert.equal(proseOf('before\u00a0handle@中\u00a0after'), 'before\u00a0 \u00a0after');
+  assert.deepEqual(Array.from(await noteWords('plain café foo@example.com @friend end', () => true)), ['plain', 'café', 'end']);
 });
 
 test('an unreadable editor survives teardown until its text can be captured', async () => {
