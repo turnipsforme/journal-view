@@ -467,3 +467,31 @@ test('returning an editor to preview mode clears its previous height hold', () =
   f.entry.applyPreview({component: {}, container: {}}, 'note body');
   assert.equal(f.minimum(), 0); assert.equal(f.entry.editor, null);
 });
+
+test('benchmark recounting existing search results', () => {
+  const {FindResults} = environment().load('findResults');
+  function sample(size, instrument) {
+    const keys = Array.from({length: size}, (_, i) => new Date(Date.UTC(1970, 0, 1 + i)).toISOString().slice(0, 10));
+    const results = new FindResults();
+    for (const key of keys) results.set(key, key + '.md', 0, 2, 1);
+    let shifts = 0;
+    if (instrument) {
+      const splice = results.keys.splice.bind(results.keys);
+      results.keys.splice = (...args) => {shifts++; return splice(...args);};
+    }
+    const start = performance.now();
+    for (const key of keys) results.set(key, key + '.md', 0, 3, 2);
+    const ms = performance.now() - start;
+    results.prune(2);
+    assert.equal(results.total, size * 3);
+    assert.equal(results.indexOf(results.first(keys[Math.floor(size / 2)]), 1), Math.floor(size / 2) * 3);
+    assert.equal(results.indexOf(results.first(keys[Math.floor(size / 2)]), -1), (size - 1 - Math.floor(size / 2)) * 3);
+    return {ms, shifts};
+  }
+  console.log('RECOUNT_ENV ' + JSON.stringify({node: process.version, cpu: require('node:os').cpus()[0]?.model}));
+  for (const size of [365, 2000, 10000]) {
+    sample(size, false);
+    const samples = Array.from({length: 5}, () => sample(size, false));
+    console.log('RECOUNT_RESULT ' + JSON.stringify({size, samples, shifts: sample(size, true).shifts}));
+  }
+});
