@@ -8,7 +8,7 @@ const {test} = require('node:test');
 const ts = require('typescript');
 const root = path.resolve(__dirname, '..');
 
-function environment() {
+function environment(overrides = {}) {
   const notices = [];
   const timers = new Map();
   let timerId = 0;
@@ -40,7 +40,7 @@ function environment() {
     if (modules.has(file)) return modules.get(file).exports;
     const module = {exports: {}};
     modules.set(file, module);
-    let source = fs.readFileSync(file, 'utf8');
+    let source = overrides[name] ?? fs.readFileSync(file, 'utf8');
     if (name === 'editor') source += '\nexport { RichEditor, resolveEditorCtor };';
     const js = ts.transpileModule(source, {compilerOptions: {module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020}}).outputText;
     const customRequire = spec => spec === 'obsidian' ? obsidian : spec.startsWith('.') ? load(path.basename(spec)) : require(spec);
@@ -134,8 +134,13 @@ test('a failed internal editor read never saves an empty body and retries captur
 });
 
 test('benchmark search match rank across the journal', () => {
-  const {FindResults} = environment().load('findResults');
-  function sample(size, instrument) {
+  const candidate = fs.readFileSync(path.join(root, 'src', 'findResults.ts'), 'utf8');
+  const baseline = candidate.replace("\t\tlet index = 0;\n\t\t// Sum the shorter side, then use the total to get the other side if needed.\n\t\tconst fromStart = at.key < this.keys[this.keys.length >> 1];\n\t\tconst stride = fromStart ? 1 : -1;\n\t\tfor (let i = fromStart ? 0 : this.keys.length - 1; i >= 0 && i < this.keys.length; i += stride) {\n\t\t\tconst key = this.keys[i];\n\t\t\tif (key === at.key) break;\n\t\t\tindex += this.days.get(key)!.count;\n\t\t}\n\t\tif ((step > 0) !== fromStart) index = this.total - day.count - index;", "\t\tlet index = 0;\n\t\tfor (const key of this.keys) {\n\t\t\tconst before = step > 0 ? key < at.key : key > at.key;\n\t\t\tif (before) index += this.days.get(key)!.count;\n\t\t}");
+  assert.notEqual(baseline, candidate);
+  const hash = require('node:crypto').createHash('sha1').update('blob ' + Buffer.byteLength(baseline) + '\0').update(baseline).digest('hex');
+  assert.equal(hash, "a0508c7f1f0efe13417f3e0c2976217da5d6692a");
+  const variants = [baseline, candidate, candidate, baseline].map(source => environment({findResults: source}).load('findResults').FindResults);
+  function sample(size, instrument, FindResults) {
     const results = new FindResults();
     const keys = Array.from({length: size}, (_, i) => new Date(Date.UTC(1970, 0, i + 1)).toISOString().slice(0, 10));
     const prefix = [0];
@@ -164,10 +169,54 @@ test('benchmark search match rank across the journal', () => {
   }
   console.log('RANK_ENV ' + JSON.stringify({node: process.version, cpu: require('node:os').cpus()[0]?.model}));
   for (const size of [365, 2000, 10000]) {
-    sample(size, false);
-    const samples = Array.from({length: 5}, () => sample(size, false));
-    console.log('RANK_RESULT ' + JSON.stringify({size, samples, lookups: sample(size, true).lookups}));
+    for (const [i, FindResults] of variants.entries()) {
+      sample(size, false, FindResults);
+      const samples = Array.from({length: 5}, () => sample(size, false, FindResults));
+      const variant = i === 0 || i === 3 ? 'baseline' : 'candidate';
+      console.log('RANK_RESULT ' + JSON.stringify({size, variant, samples, lookups: sample(size, true, FindResults).lookups}));
+    }
   }
+});
+
+test('search ranks stay exact after insert, recount, move, deletion and prune', () => {
+  const {FindResults} = environment().load('findResults');
+  const r = new FindResults();
+  const keys = ['2026-01-01', '2026-01-02', '2026-01-03', '2026-01-04'];
+  const model = new Map();
+  const set = (key, path, order, count, generation) => {
+    r.set(key, path, order, count, generation);
+    if (count > 0) model.set(path, {key, path, order, count, generation});
+    else model.delete(path);
+  };
+  const check = () => {
+    for (const step of [-1, 1]) {
+      const sorted = [...model.values()].sort((a, b) =>
+        step * a.key.localeCompare(b.key) || a.order - b.order || a.path.localeCompare(b.path));
+      let index = 0;
+      for (const note of sorted) {
+        for (let i = 0; i < note.count; i++) {
+          assert.equal(r.indexOf({key: note.key, path: note.path, index: i}, step), index++);
+        }
+        assert.equal(r.indexOf({key: note.key, path: note.path, index: note.count}, step), -1);
+        assert.equal(r.indexOf({key: note.key, path: note.path, index: -1}, step), -1);
+      }
+      assert.equal(r.total, index);
+      assert.equal(r.indexOf({key: keys[0], path: 'missing', index: 0}, step), -1);
+    }
+  };
+  check();
+  set(keys[3], 'd', 0, 7, 1); check();
+  set(keys[0], 'a', 0, 2, 1);
+  set(keys[0], 'a2', 1, 3, 1);
+  set(keys[1], 'b', 0, 5, 2);
+  set(keys[2], 'c', 0, 4, 2); check();
+  set(keys[1], 'b', 0, 1, 3); check();
+  set(keys[3], 'c', 1, 2, 3); check();
+  r.delete('a'); model.delete('a'); check();
+  r.prune(2);
+  for (const [path, note] of model) if (note.generation < 2) model.delete(path);
+  check();
+  r.clear(); model.clear(); check();
 });
 
 test('editor document supplies current text when its convenience getter breaks', () => {
