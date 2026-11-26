@@ -467,3 +467,41 @@ test('returning an editor to preview mode clears its previous height hold', () =
   f.entry.applyPreview({component: {}, container: {}}, 'note body');
   assert.equal(f.minimum(), 0); assert.equal(f.entry.editor, null);
 });
+
+test('benchmark overlapping search reads of synthetic notes', async () => {
+  const e = environment();
+  const {FindCorpus} = e.load('findCorpus');
+  async function sample(size) {
+    let reads = 0;
+    const text = '---\r\nmarker: hidden\r\n---\r\n# Heading\r\nneedle 😀\r\n';
+    const expected = '# Heading\nneedle 😀\n';
+    const files = Array.from({length: size}, (_, i) => {
+      const file = new e.TFile('Journal/' + i + '.md');
+      file.stat = {mtime: 1, size: text.length};
+      return file;
+    });
+    const corpus = new FindCorpus({vault: {
+      cachedRead: async () => {reads++; return text;},
+    }});
+    const release = corpus.retain();
+    const start = performance.now();
+    for (let i = 0; i < size; i += 6) {
+      const batch = files.slice(i, i + 6);
+      const bodies = await Promise.all(batch.flatMap(file =>
+        [corpus.read(file), corpus.read(file), corpus.read(file), corpus.read(file)]));
+      assert.ok(bodies.every(body => body === expected));
+    }
+    const ms = performance.now() - start;
+    assert.ok(files.every(file => corpus.peek(file) === expected));
+    release(); corpus.onunload();
+    assert.equal(e.timers.size, 0);
+    return {ms, reads};
+  }
+  console.log('SEARCH_ENV ' + JSON.stringify({node: process.version, cpu: require('node:os').cpus()[0]?.model}));
+  for (const size of [365, 2000, 10000]) {
+    await sample(size);
+    const samples = [];
+    for (let i = 0; i < 5; i++) samples.push(await sample(size));
+    console.log('SEARCH_RESULT ' + JSON.stringify({size, samples}));
+  }
+});
