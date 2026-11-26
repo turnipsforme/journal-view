@@ -298,6 +298,20 @@ test('failed editor-constructor probe still unloads its temporary embed', () => 
   assert.equal(resolveEditorCtor(app), null); assert.equal(unloaded, 1);
 });
 
+test('nearest-day traversal preserves sparse date order, missing anchors and ties in both directions', () => {
+  const {keysAround} = environment().load('noteIndex');
+  const keys = ['1999-12-31', '2000-01-01', '2000-02-28', '2000-02-29', '2000-03-01', '2000-03-02', '2026-11-25'];
+  for (const key of ['1900-01-01', ...keys, '2000-02-27', '2000-03-03', '2050-01-01']) {
+    for (const direction of [-1, 1]) {
+      const expected = keys.filter(candidate => candidate !== key).sort((a, b) =>
+        Math.abs(Date.parse(a) - Date.parse(key)) - Math.abs(Date.parse(b) - Date.parse(key)) ||
+        direction * (Date.parse(b) - Date.parse(a)));
+      assert.deepEqual(Array.from(keysAround(keys, key, direction)), expected);
+    }
+  }
+  assert.deepEqual(Array.from(keysAround([], '2000-02-29', 1)), []);
+});
+
 test('folder configuration changes rebuild without retargeting dirty sections first', () => {
   const e = environment(); const {JournalView} = e.load('view');
   const view = Object.create(JournalView.prototype); let rebuilt = false;
