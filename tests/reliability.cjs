@@ -286,7 +286,7 @@ test('only the newest concurrent rebuild proceeds after delayed saves', async ()
 
 test('benchmark alternate vocabulary forms across repeated month selections', () => {
   const candidate = fs.readFileSync(path.join(root, 'src', 'newWords.ts'), 'utf8');
-  const edits = [["\tprivate form = new Int32Array(0);","\tprivate form = new Int32Array(0);\n\t/** Distinct alternate word IDs used by notes in the current fold, by stem. */\n\tprivate alternateForms = new Map<number, Set<number>>();"],["\t\tthis.paths.clear();\n\t\tthis.tiles.clear();","\t\tthis.paths.clear();\n\t\tthis.alternateForms.clear();\n\t\tthis.tiles.clear();"],["\t\tthis.form = new Int32Array(0);\n\t\tthis.uses","\t\tthis.form = new Int32Array(0);\n\t\tthis.alternateForms.clear();\n\t\tthis.uses"],["\t\t\t\t\tif (tile) tile.added++;\n\t\t\t\t}\n\t\t\t\tif (this.seen[stem]","\t\t\t\t\tif (tile) tile.added++;\n\t\t\t\t} else if (id !== this.form[stem]) {\n\t\t\t\t\tlet forms = this.alternateForms.get(stem);\n\t\t\t\t\tif (!forms) this.alternateForms.set(stem, (forms = new Set()));\n\t\t\t\t\tforms.add(id);\n\t\t\t\t}\n\t\t\t\tif (this.seen[stem]"],["\t\tfor (const note of this.notes) {\n\t\t\tif (note.vocabulary?.status !== \"ready\") continue;\n\t\t\tfor (const id of note.vocabulary.ids) {\n\t\t\t\tconst stem = statistics.stemOf(id);\n\t\t\t\tif (!stems.has(stem) || id === this.form[stem]) continue;\n\t\t\t\tlet set = forms.get(stem);\n\t\t\t\tif (!set) forms.set(stem, set = new Set());\n\t\t\t\tset.add(statistics.word(id));\n\t\t\t}\n\t\t}","\t\tfor (const stem of stems) {\n\t\t\tconst ids = this.alternateForms.get(stem);\n\t\t\tif (ids) forms.set(stem, new Set(Array.from(ids, (id) => statistics.word(id))));\n\t\t}"]];
+  const edits = [["\tprivate form = new Int32Array(0);","\tprivate form = new Int32Array(0);\n\t/** Distinct alternate word IDs used by notes in the current fold, by stem. */\n\tprivate alternateForms = new Map<number, Set<number>>();"],["\t\tthis.paths.clear();\n\t\tthis.tiles.clear();","\t\tthis.paths.clear();\n\t\tthis.alternateForms.clear();\n\t\tthis.tiles.clear();"],["\t\tthis.form = new Int32Array(0);\n\t\tthis.uses","\t\tthis.form = new Int32Array(0);\n\t\tthis.alternateForms.clear();\n\t\tthis.uses"],["\t\t\t\t\tif (tile) tile.added++;\n\t\t\t\t}\n\t\t\t\tif (this.seen[stem]","\t\t\t\t\tif (tile) tile.added++;\n\t\t\t\t} else if (id !== this.form[stem]) {\n\t\t\t\t\tlet forms = this.alternateForms.get(stem);\n\t\t\t\t\tif (!forms) this.alternateForms.set(stem, (forms = new Set()));\n\t\t\t\t\tforms.add(id);\n\t\t\t\t}\n\t\t\t\tif (this.seen[stem]"],["\t\tfor (const note of this.notes) {\n\t\t\tif (note.vocabulary?.status !== \"ready\") continue;\n\t\t\tfor (const id of note.vocabulary.ids) {\n\t\t\t\tconst stem = statistics.stemOf(id);\n\t\t\t\tif (!stems.has(stem) || id === this.form[stem]) continue;\n\t\t\t\tlet set = forms.get(stem);\n\t\t\t\tif (!set) forms.set(stem, set = new Set());\n\t\t\t\tset.add(statistics.word(id));\n\t\t\t}\n\t\t}","\t\tfor (const stem of stems) {\n\t\t\tconst ids = this.alternateForms.get(stem);\n\t\t\tif (ids) forms.set(stem, new Set(Array.from(ids, (id) => statistics.word(id))));\n\t\t}"],["\tprivate alternateForms = new Map<number, Set<number>>();","\tprivate alternateForms = new Map<number, Set<number>>();\n\t/** Temporary marks for alternate IDs already collected in this fold. */\n\tprivate alternateSeen = new Uint8Array(0);"],["\t\tthis.alternateForms.clear();\n\t\tthis.tiles.clear();","\t\tthis.alternateForms.clear();\n\t\tthis.alternateSeen = new Uint8Array(0);\n\t\tthis.tiles.clear();"],["\t\tthis.alternateForms.clear();\n\t\tthis.uses","\t\tthis.alternateForms.clear();\n\t\tthis.alternateSeen = new Uint8Array(0);\n\t\tthis.uses"],["\t\tthis.reserve(statistics.stemCount);\n\t\tfor (; this.frontier","\t\tthis.reserve(statistics.stemCount);\n\t\tif (this.frontier < this.notes.length && statistics.wordCount > this.alternateSeen.length) {\n\t\t\tconst next = new Uint8Array(Math.max(statistics.wordCount, this.alternateSeen.length * 2, 1024));\n\t\t\tnext.set(this.alternateSeen);\n\t\t\tthis.alternateSeen = next;\n\t\t}\n\t\tfor (; this.frontier"],["\t\t\t\t} else if (id !== this.form[stem]) {\n\t\t\t\t\tlet forms","\t\t\t\t} else if (id !== this.form[stem] && !this.alternateSeen[id]) {\n\t\t\t\t\tthis.alternateSeen[id] = 1;\n\t\t\t\t\tlet forms"],["\t\tif (this.frontier !== start || start === 0) this.updateTiles();","\t\tif (this.frontier === this.notes.length) this.alternateSeen = new Uint8Array(0);\n\t\tif (this.frontier !== start || start === 0) this.updateTiles();"]];
   let baseline = candidate;
   for (const [old, replacement] of edits.reverse()) baseline = baseline.replace(replacement, old);
   assert.notEqual(baseline, candidate);
@@ -300,7 +300,7 @@ test('benchmark alternate vocabulary forms across repeated month selections', ()
     const first = new Map();
     let calls = 0;
     const statistics = {
-      stemCount: STEMS,
+      stemCount: STEMS, wordCount: STEMS * 3,
       stemOf(id) {if (instrument) calls++; return Math.floor(id / 3);},
       word(id) {return 'form-' + id;},
     };
@@ -323,6 +323,7 @@ test('benchmark alternate vocabulary forms across repeated month selections', ()
     mosaic.advance();
     const foldMs = performance.now() - startFold;
     assert.equal(mosaic.frontier, size);
+    if (mosaic.alternateSeen) assert.equal(mosaic.alternateSeen.length, 0);
     const foldLookups = calls;
     const queries = Array.from({length: SELECTIONS}, (_, i) =>
       new Set(Array.from({length: i % 3 === 0 ? 20 : i % 3 === 1 ? 100 : 300}, (_, j) => (i * 113 + j * 7) % STEMS)));
@@ -361,7 +362,7 @@ test('alternate vocabulary forms follow the active chronological fold and disapp
   const notes = new Map([[first, a], [next, b], [last, c]]);
   const vocab = new Map([[a, {status: 'ready', ids: Uint32Array.from([1, 3, 0])}],
     [b, {status: 'ready', ids: Uint32Array.from([2, 0, 4, 2])}], [c, {status: 'error'}]]);
-  const stats = {stemCount: 2, stemOf: id => Math.floor(id / 3), word: id => 'form-' + id,
+  const stats = {stemCount: 2, wordCount: 6, stemOf: id => Math.floor(id / 3), word: id => 'form-' + id,
     peekVocabulary: file => vocab.get(file)};
   const plugin = {statistics: stats, daily: {config: () => ({})},
     index: {ensureCurrent() {}, keys: () => [...notes.keys()], pathsFor: key => [notes.get(key).path]},
@@ -386,7 +387,30 @@ test('alternate vocabulary forms follow the active chronological fold and disapp
   assert.equal(mosaic.otherForms(new Set([1])).has(1), false);
   mosaic.onunload();
   assert.equal(mosaic.alternateForms.size, 0);
+  assert.equal(mosaic.alternateSeen.length, 0);
   assert.equal(e.timers.size, 0);
+});
+
+test('temporary alternate ID marks grow across partially read vocabulary and are released', () => {
+  const {NewWordsMosaic} = environment().load('newWords');
+  const stats = {stemCount: 2, wordCount: 3, stemOf: id => id < 3 ? 0 : 1, word: id => 'form-' + id};
+  const mosaic = new NewWordsMosaic({}, {statistics: stats});
+  mosaic.updateTiles = () => {};
+  mosaic.notes = [{month: 1, vocabulary: {status: 'ready', ids: Uint32Array.from([0, 1])}},
+    {month: 2, vocabulary: null}];
+  mosaic.advance();
+  assert.equal(mosaic.frontier, 1);
+  assert.ok(mosaic.alternateSeen.length >= 3);
+  assert.equal(mosaic.alternateSeen[1], 1);
+  stats.wordCount = 1202;
+  mosaic.notes[1].vocabulary = {status: 'ready', ids: Uint32Array.from([1, 2, 1200, 1201])};
+  mosaic.advance();
+  assert.equal(mosaic.frontier, 2);
+  assert.deepEqual(Array.from(mosaic.otherForms(new Set([0])).get(0)), ['form-1', 'form-2']);
+  assert.deepEqual(Array.from(mosaic.otherForms(new Set([1])).get(1)), ['form-1201']);
+  assert.equal(mosaic.alternateSeen.length, 0);
+  mosaic.advance();
+  assert.equal(mosaic.alternateSeen.length, 0);
 });
 
 test('failed embedded-editor initialization unloads its instance before fallback', () => {

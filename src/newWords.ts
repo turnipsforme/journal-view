@@ -93,6 +93,8 @@ export class NewWordsMosaic extends Component {
 	private form = new Int32Array(0);
 	/** Distinct alternate word IDs used by notes in the current fold, by stem. */
 	private alternateForms = new Map<number, Set<number>>();
+	/** Temporary marks for alternate IDs already collected in this fold. */
+	private alternateSeen = new Uint8Array(0);
 	/** How many notes use the word, among those folded in so far. */
 	private uses = new Uint32Array(0);
 	/** The last note counted in `uses`, so a note using two forms counts once. */
@@ -151,6 +153,7 @@ export class NewWordsMosaic extends Component {
 		this.notes = [];
 		this.paths.clear();
 		this.alternateForms.clear();
+		this.alternateSeen = new Uint8Array(0);
 		this.tiles.clear();
 		this.years = [];
 	}
@@ -186,6 +189,7 @@ export class NewWordsMosaic extends Component {
 		this.first = new Int32Array(0);
 		this.form = new Int32Array(0);
 		this.alternateForms.clear();
+		this.alternateSeen = new Uint8Array(0);
 		this.uses = new Uint32Array(0);
 		this.seen = new Int32Array(0);
 		this.frontier = 0;
@@ -233,6 +237,11 @@ export class NewWordsMosaic extends Component {
 		const start = this.frontier;
 		const { statistics } = this.plugin;
 		this.reserve(statistics.stemCount);
+		if (this.frontier < this.notes.length && statistics.wordCount > this.alternateSeen.length) {
+			const next = new Uint8Array(Math.max(statistics.wordCount, this.alternateSeen.length * 2, 1024));
+			next.set(this.alternateSeen);
+			this.alternateSeen = next;
+		}
 		for (; this.frontier < this.notes.length; this.frontier++) {
 			const note = this.notes[this.frontier];
 			if (!note.vocabulary) break;
@@ -250,7 +259,8 @@ export class NewWordsMosaic extends Component {
 					this.first[stem] = this.frontier;
 					this.form[stem] = id;
 					if (tile) tile.added++;
-				} else if (id !== this.form[stem]) {
+				} else if (id !== this.form[stem] && !this.alternateSeen[id]) {
+					this.alternateSeen[id] = 1;
 					let forms = this.alternateForms.get(stem);
 					if (!forms) this.alternateForms.set(stem, (forms = new Set()));
 					forms.add(id);
@@ -261,6 +271,7 @@ export class NewWordsMosaic extends Component {
 				}
 			}
 		}
+		if (this.frontier === this.notes.length) this.alternateSeen = new Uint8Array(0);
 		if (this.frontier !== start || start === 0) this.updateTiles();
 	}
 
