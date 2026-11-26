@@ -157,8 +157,10 @@ export function normalizeWord(word: string): string {
  * so a link inside it is not mistaken for one.
  */
 export function proseOf(content: string): string {
-	let text = blankCodeBlocks(content.slice(getFrontMatterInfo(content).contentStart));
-	text = text.split("\n").map(blankInlineCode).join("\n");
+	let text = content.slice(getFrontMatterInfo(content).contentStart);
+	// Fences and indented code require one of these markers; otherwise the line pass is a no-op.
+	if (/[`~\t]| {4}/.test(text)) text = blankCodeBlocks(text);
+	if (text.includes("`")) text = text.split("\n").map(blankInlineCode).join("\n");
 	// Reference definitions name the labels that shortcut links like `[label]` use.
 	const labels = new Set<string>();
 	text = text.replace(REFERENCE_DEFINITION, (_line, label: string) => {
