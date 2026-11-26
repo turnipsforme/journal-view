@@ -284,6 +284,60 @@ test('only the newest concurrent rebuild proceeds after delayed saves', async ()
   pending[0](); pending[1](); await Promise.all([first, second]); assert.deepEqual(builds, ['second']);
 });
 
+test('benchmark alternate vocabulary forms across repeated month selections', () => {
+  const {NewWordsMosaic} = environment().load('newWords');
+  const STEMS = 2000, WORDS = 100, SELECTIONS = 12;
+  function sample(size, instrument) {
+    const notes = [];
+    const model = new Map();
+    const first = new Map();
+    let calls = 0;
+    const statistics = {
+      stemCount: STEMS,
+      stemOf(id) {if (instrument) calls++; return Math.floor(id / 3);},
+      word(id) {return 'form-' + id;},
+    };
+    for (let n = 0; n < size; n++) {
+      const ids = Uint32Array.from({length: WORDS}, (_, i) => ((n * 37 + i * 19) % STEMS) * 3 + ((n + i) % 3));
+      notes.push({month: Math.floor(n / 30), vocabulary: {status: 'ready', ids}});
+      for (const id of ids) {
+        const stem = Math.floor(id / 3);
+        if (!first.has(stem)) first.set(stem, id);
+        else if (first.get(stem) !== id) {
+          if (!model.has(stem)) model.set(stem, new Set());
+          model.get(stem).add('form-' + id);
+        }
+      }
+    }
+    const mosaic = new NewWordsMosaic({}, {statistics});
+    mosaic.notes = notes;
+    mosaic.updateTiles = () => {};
+    const startFold = performance.now();
+    mosaic.advance();
+    const foldMs = performance.now() - startFold;
+    assert.equal(mosaic.frontier, size);
+    const foldLookups = calls;
+    const queries = Array.from({length: SELECTIONS}, (_, i) =>
+      new Set(Array.from({length: i % 3 === 0 ? 20 : i % 3 === 1 ? 100 : 300}, (_, j) => (i * 113 + j * 7) % STEMS)));
+    const start = performance.now();
+    const results = queries.map(query => mosaic.otherForms(query));
+    const ms = performance.now() - start;
+    for (let i = 0; i < queries.length; i++) {
+      const actual = results[i], query = queries[i];
+      assert.equal(actual.size, [...query].filter(stem => model.has(stem)).length);
+      for (const stem of query) assert.deepEqual(Array.from(actual.get(stem) ?? []), Array.from(model.get(stem) ?? []));
+    }
+    return {ms, foldMs, foldLookups, selectionLookups: calls - foldLookups,
+      alternateIds: mosaic.alternateForms ? [...mosaic.alternateForms.values()].reduce((n, ids) => n + ids.size, 0) : 0};
+  }
+  console.log('FORMS_ENV ' + JSON.stringify({node: process.version, cpu: require('node:os').cpus()[0]?.model}));
+  for (const size of [365, 2000, 10000]) {
+    sample(size, false);
+    const samples = Array.from({length: 5}, () => sample(size, false));
+    console.log('FORMS_RESULT ' + JSON.stringify({size, samples, operations: sample(size, true)}));
+  }
+});
+
 test('failed embedded-editor initialization unloads its instance before fallback', () => {
   const e = environment(); const {RichEditor} = e.load('editor'); let destroyed = 0; let unloaded = 0;
   class BrokenEditor {get() {return ''} set() {} load() {throw new Error('load failed')} destroy() {destroyed++} unload() {unloaded++}}
