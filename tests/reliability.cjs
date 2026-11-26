@@ -739,6 +739,52 @@ test('failed external editor replacement cannot overwrite the newer vault conten
   assert.equal(e.timers.size, 1);
 });
 
+test('benchmark vocabulary prose preparation across representative note types', {skip: process.env.JOURNAL_PERF !== '1'}, () => {
+  const {proseOf} = environment().load('vocabulary');
+  const plain = 'A quiet morning by the river. I walked home with a friend and cooked dinner. Café 中文 𐐀.\n'.repeat(12);
+  const marked = '# Today\n\n> A quote\n> ordinary words.\n' +
+    '> ~~~js\n> hidden code\n> ~~~\n\n    hidden indented code\n\n- a list item\n    nested prose\n' +
+    'Words and \x60inline code\x60 plus [[hidden link]] and [ref]\n[ref]: https://example.com\n' +
+    'mailto@example.com @name #tag\n' + plain;
+  const cases = [
+    ['plain', plain],
+    ['markup', marked],
+    ['email', plain + 'Reach out to person@example.com or @friend.\n'],
+  ];
+  function sample(size, body) {
+    const notes = Array.from({length: size}, (_, i) => '---\nnumber: ' + i + '\n---\n' + body + 'Day ' + i);
+    const expected = notes.map(proseOf);
+    let length = 0;
+    const start = performance.now();
+    for (let i = 0; i < notes.length; i++) {
+      const text = proseOf(notes[i]);
+      assert.equal(text, expected[i]);
+      length += text.length;
+    }
+    const ms = performance.now() - start;
+    assert.ok(length > 0);
+    return ms;
+  }
+  console.log('PROSE_ENV ' + JSON.stringify({node: process.version, cpu: require('node:os').cpus()[0]?.model}));
+  for (const size of [365, 2000, 10000]) {
+    for (const [kind, body] of cases) {
+      sample(size, body);
+      const samples = Array.from({length: 5}, () => sample(size, body));
+      console.log('PROSE_RESULT ' + JSON.stringify({size, kind, samples}));
+    }
+  }
+});
+
+test('vocabulary email shortcut preserves whitespace and removes complete handle tokens', async () => {
+  const {proseOf, noteWords} = environment().load('vocabulary');
+  assert.equal(proseOf('plain café 中文\ttext'), 'plain café 中文\ttext');
+  assert.equal(proseOf('before [[x@y]] after'), 'before   after');
+  assert.equal(proseOf('---\nemail: a@example.com\n---\nplain words'), 'plain words');
+  assert.equal(proseOf('before a@example.com @friend\tend'), 'before    \tend');
+  assert.equal(proseOf('before\u00a0handle@中\u00a0after'), 'before\u00a0 \u00a0after');
+  assert.deepEqual(Array.from(await noteWords('plain café foo@example.com @friend end', () => true)), ['plain', 'café', 'end']);
+});
+
 test('an unreadable editor survives teardown until its text can be captured', async () => {
   const e = environment(); const f = e.entryFixture('initial');
   const editor = f.entry.editor; editor.tryGetValue = () => null;
