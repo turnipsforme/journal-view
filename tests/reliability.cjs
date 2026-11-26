@@ -10,6 +10,7 @@ const root = path.resolve(__dirname, '..');
 
 function environment() {
   const notices = [];
+  const warnings = [];
   const timers = new Map();
   let timerId = 0;
   const clock = {
@@ -45,7 +46,7 @@ function environment() {
     const js = ts.transpileModule(source, {compilerOptions: {module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020}}).outputText;
     const customRequire = spec => spec === 'obsidian' ? obsidian : spec.startsWith('.') ? load(path.basename(spec)) : require(spec);
     vm.runInNewContext('(function(require,module,exports){' + js + '\n})', {
-      console: {warn() {}, error() {}}, window: clock, performance, Date,
+      console: {warn: (...args) => warnings.push(args), error() {}}, window: clock, performance, Date,
       createDiv: () => ({createDiv: () => ({}), createEl: () => ({}), createSpan: () => ({}), empty() {}, appendChild() {}, setText() {}, setAttribute() {}}),
       createFragment: () => ({appendText() {}, createEl() {}}),
     }, {filename: file})(customRequire, module, module.exports);
@@ -88,7 +89,7 @@ function environment() {
     entry.queue = new SaveQueue(value => entry.writeValue(value));
     return {entry, files, writes: () => writes, type: text => {editorText = text}};
   }
-  return {load, notices, timers, clock, TFile, entryFixture};
+  return {load, notices, warnings, timers, clock, TFile, entryFixture};
 }
 
 test('later edits keep saving to the conflict copy without overwriting the original', async () => {
@@ -384,6 +385,153 @@ test('a failed vault read leaves existing content intact', async () => {
   f.entry.host.app.vault.cachedRead = async () => {throw new Error('read failed')};
   await f.entry.reload(); assert.equal(f.entry.lastKnownContent, 'existing note');
   assert.equal(f.entry.editor.getValue(), 'existing note');
+});
+
+test('benchmark overlapping search reads of synthetic notes', async () => {
+  const e = environment();
+  const {FindCorpus} = e.load('findCorpus');
+  async function sample(size) {
+    let reads = 0;
+    const text = '---\r\nmarker: hidden\r\n---\r\n# Heading\r\nneedle 😀\r\n';
+    const expected = '# Heading\nneedle 😀\n';
+    const files = Array.from({length: size}, (_, i) => {
+      const file = new e.TFile('Journal/' + i + '.md');
+      file.stat = {mtime: 1, size: text.length};
+      return file;
+    });
+    const byPath = new Map(files.map(file => [file.path, file]));
+    const corpus = new FindCorpus({vault: {
+      cachedRead: async () => {reads++; return text;},
+      getAbstractFileByPath: path => byPath.get(path) ?? null,
+    }});
+    const release = corpus.retain();
+    const start = performance.now();
+    for (let i = 0; i < size; i += 6) {
+      const batch = files.slice(i, i + 6);
+      const bodies = await Promise.all(batch.flatMap(file =>
+        [corpus.read(file), corpus.read(file), corpus.read(file), corpus.read(file)]));
+      assert.ok(bodies.every(body => body === expected));
+    }
+    const ms = performance.now() - start;
+    assert.equal(reads, size);
+    assert.ok(files.every(file => corpus.peek(file) === expected));
+    release(); corpus.onunload();
+    assert.equal(e.timers.size, 0);
+    return {ms, reads};
+  }
+  console.log('SEARCH_ENV ' + JSON.stringify({node: process.version, cpu: require('node:os').cpus()[0]?.model}));
+  for (const size of [365, 2000, 10000]) {
+    await sample(size);
+    const samples = [];
+    for (let i = 0; i < 5; i++) samples.push(await sample(size));
+    console.log('SEARCH_RESULT ' + JSON.stringify({size, samples}));
+  }
+});
+
+function corpusFixture() {
+  const e = environment();
+  const {FindCorpus} = e.load('findCorpus');
+  const file = new e.TFile('Journal/2026-11-26.md');
+  file.stat = {mtime: 1, size: 10};
+  const files = new Map([[file.path, file]]);
+  const pending = [];
+  const corpus = new FindCorpus({vault: {
+    getAbstractFileByPath: path => files.get(path) ?? null,
+    cachedRead: target => new Promise((resolve, reject) => pending.push({target, resolve, reject})),
+  }});
+  const release = corpus.retain();
+  return {e, corpus, file, files, pending, release};
+}
+
+test('overlapping corpus reads share work, and a failed read can be retried', async () => {
+  const {corpus, file, pending, release, e} = corpusFixture();
+  const first = corpus.read(file), second = corpus.read(file);
+  assert.equal(pending.length, 1);
+  pending[0].reject(new Error('read failed'));
+  assert.equal(await first, null); assert.equal(await second, null);
+  assert.equal(e.warnings.length, 1);
+  const retry = corpus.read(file);
+  assert.equal(pending.length, 2);
+  pending[1].resolve('---\r\na: b\r\n---\r\n# Title\r\nneedle 😀');
+  assert.equal(await retry, '# Title\nneedle 😀');
+  assert.equal(corpus.peek(file), '# Title\nneedle 😀');
+  release(); corpus.onunload(); assert.equal(e.timers.size, 0);
+});
+
+test('a same-size edit starts a fresh read and late completion cannot replace it', async () => {
+  const {corpus, file, pending} = corpusFixture();
+  const old = corpus.read(file);
+  corpus.invalidate(file, [file.path]);
+  const fresh = corpus.read(file);
+  assert.equal(pending.length, 2);
+  pending[1].resolve('new body');
+  assert.equal(await fresh, 'new body');
+  pending[0].resolve('old body');
+  assert.equal(await old, 'new body');
+  assert.equal(corpus.peek(file), 'new body');
+  assert.equal(pending.length, 2);
+  corpus.onunload();
+});
+
+test('folder rename invalidates pending reads and deletion cannot resurrect a cache entry', async () => {
+  const {corpus, file, files, pending} = corpusFixture();
+  const oldPath = file.path;
+  const old = corpus.read(file);
+  files.delete(oldPath); file.path = 'Moved/2026-11-26.md'; files.set(file.path, file);
+  corpus.invalidateFolder(['Journal', 'Moved']);
+  const fresh = corpus.read(file);
+  pending[1].resolve('new body');
+  assert.equal(await fresh, 'new body');
+  pending[0].resolve('old body');
+  assert.equal(await old, 'new body');
+  assert.equal(corpus.texts.has(oldPath), false);
+  corpus.invalidate(file, [file.path]);
+  const deleted = corpus.read(file);
+  files.delete(file.path); corpus.invalidate(file, [file.path]);
+  pending[2].resolve('deleted');
+  assert.equal(await deleted, null);
+  assert.equal(corpus.peek(file), null);
+  corpus.onunload();
+});
+
+test('unloading the corpus clears outstanding reads without repopulating it', async () => {
+  const {corpus, file, pending} = corpusFixture();
+  const read = corpus.read(file);
+  corpus.onunload();
+  pending[0].resolve('late');
+  assert.equal(await read, null);
+  assert.equal(await corpus.read(file), null);
+  assert.equal(corpus.pending.size, 0);
+  assert.equal(corpus.peek(file), null);
+});
+
+test('a failed obsolete read cannot hide a newer successful result', async () => {
+  const {corpus, file, pending, e} = corpusFixture();
+  const old = corpus.read(file);
+  corpus.invalidate(file, [file.path]);
+  const fresh = corpus.read(file);
+  pending[1].resolve('new body');
+  assert.equal(await fresh, 'new body');
+  pending[0].reject(new Error('old revision failed'));
+  assert.equal(await old, 'new body');
+  assert.equal(corpus.peek(file), 'new body');
+  assert.equal(pending.length, 2);
+  assert.equal(e.warnings.length, 0);
+  corpus.onunload();
+});
+
+test('repeated invalidation does not return stale search text after retry exhaustion', async () => {
+  const {corpus, file, pending} = corpusFixture();
+  const read = corpus.read(file);
+  for (let i = 0; i < 3; i++) {
+    assert.equal(pending.length, i + 1);
+    corpus.invalidate(file, [file.path]);
+    pending[i].resolve('obsolete ' + i);
+    for (let j = 0; j < 8; j++) await Promise.resolve();
+  }
+  assert.equal(await read, null);
+  assert.equal(corpus.peek(file), null);
+  corpus.onunload();
 });
 
 test('closing a view while rebuild waits for saves cannot rebuild the closed tab', async () => {
