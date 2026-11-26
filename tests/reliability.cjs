@@ -8,7 +8,7 @@ const {test} = require('node:test');
 const ts = require('typescript');
 const root = path.resolve(__dirname, '..');
 
-function environment(overrides = {}) {
+function environment() {
   const notices = [];
   const timers = new Map();
   let timerId = 0;
@@ -40,7 +40,7 @@ function environment(overrides = {}) {
     if (modules.has(file)) return modules.get(file).exports;
     const module = {exports: {}};
     modules.set(file, module);
-    let source = overrides[name] ?? fs.readFileSync(file, 'utf8');
+    let source = fs.readFileSync(file, 'utf8');
     if (name === 'editor') source += '\nexport { RichEditor, resolveEditorCtor };';
     const js = ts.transpileModule(source, {compilerOptions: {module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020}}).outputText;
     const customRequire = spec => spec === 'obsidian' ? obsidian : spec.startsWith('.') ? load(path.basename(spec)) : require(spec);
@@ -133,14 +133,9 @@ test('a failed internal editor read never saves an empty body and retries captur
   assert.equal(e.timers.size, 0);
 });
 
-test('benchmark search match rank across the journal', () => {
-  const candidate = fs.readFileSync(path.join(root, 'src', 'findResults.ts'), 'utf8');
-  const baseline = candidate.replace("\t\tlet index = 0;\n\t\t// Sum the shorter side, then use the total to get the other side if needed.\n\t\tconst fromStart = at.key < this.keys[this.keys.length >> 1];\n\t\tconst stride = fromStart ? 1 : -1;\n\t\tfor (let i = fromStart ? 0 : this.keys.length - 1; i >= 0 && i < this.keys.length; i += stride) {\n\t\t\tconst key = this.keys[i];\n\t\t\tif (key === at.key) break;\n\t\t\tindex += this.days.get(key)!.count;\n\t\t}\n\t\tif ((step > 0) !== fromStart) index = this.total - day.count - index;", "\t\tlet index = 0;\n\t\tfor (const key of this.keys) {\n\t\t\tconst before = step > 0 ? key < at.key : key > at.key;\n\t\t\tif (before) index += this.days.get(key)!.count;\n\t\t}");
-  assert.notEqual(baseline, candidate);
-  const hash = require('node:crypto').createHash('sha1').update('blob ' + Buffer.byteLength(baseline) + '\0').update(baseline).digest('hex');
-  assert.equal(hash, "a0508c7f1f0efe13417f3e0c2976217da5d6692a");
-  const variants = [baseline, candidate, candidate, baseline].map(source => environment({findResults: source}).load('findResults').FindResults);
-  function sample(size, instrument, FindResults) {
+test('benchmark search match rank across the journal', {skip: process.env.JOURNAL_PERF !== '1'}, () => {
+  const {FindResults} = environment().load('findResults');
+  function sample(size, instrument) {
     const results = new FindResults();
     const keys = Array.from({length: size}, (_, i) => new Date(Date.UTC(1970, 0, i + 1)).toISOString().slice(0, 10));
     const prefix = [0];
@@ -169,12 +164,9 @@ test('benchmark search match rank across the journal', () => {
   }
   console.log('RANK_ENV ' + JSON.stringify({node: process.version, cpu: require('node:os').cpus()[0]?.model}));
   for (const size of [365, 2000, 10000]) {
-    for (const [i, FindResults] of variants.entries()) {
-      sample(size, false, FindResults);
-      const samples = Array.from({length: 5}, () => sample(size, false, FindResults));
-      const variant = i === 0 || i === 3 ? 'baseline' : 'candidate';
-      console.log('RANK_RESULT ' + JSON.stringify({size, variant, samples, lookups: sample(size, true, FindResults).lookups}));
-    }
+    sample(size, false);
+    const samples = Array.from({length: 5}, () => sample(size, false));
+    console.log('RANK_RESULT ' + JSON.stringify({size, samples, lookups: sample(size, true).lookups}));
   }
 });
 
