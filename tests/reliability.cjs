@@ -8,7 +8,7 @@ const {test} = require('node:test');
 const ts = require('typescript');
 const root = path.resolve(__dirname, '..');
 
-function environment() {
+function environment(overrides = {}) {
   const notices = [];
   const timers = new Map();
   let timerId = 0;
@@ -40,7 +40,7 @@ function environment() {
     if (modules.has(file)) return modules.get(file).exports;
     const module = {exports: {}};
     modules.set(file, module);
-    let source = fs.readFileSync(file, 'utf8');
+    let source = overrides[name] ?? fs.readFileSync(file, 'utf8');
     if (name === 'editor') source += '\nexport { RichEditor, resolveEditorCtor };';
     const js = ts.transpileModule(source, {compilerOptions: {module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020}}).outputText;
     const customRequire = spec => spec === 'obsidian' ? obsidian : spec.startsWith('.') ? load(path.basename(spec)) : require(spec);
@@ -285,9 +285,16 @@ test('only the newest concurrent rebuild proceeds after delayed saves', async ()
 });
 
 test('benchmark alternate vocabulary forms across repeated month selections', () => {
-  const {NewWordsMosaic} = environment().load('newWords');
+  const candidate = fs.readFileSync(path.join(root, 'src', 'newWords.ts'), 'utf8');
+  const edits = [["\tprivate form = new Int32Array(0);","\tprivate form = new Int32Array(0);\n\t/** Distinct alternate word IDs used by notes in the current fold, by stem. */\n\tprivate alternateForms = new Map<number, Set<number>>();"],["\t\tthis.paths.clear();\n\t\tthis.tiles.clear();","\t\tthis.paths.clear();\n\t\tthis.alternateForms.clear();\n\t\tthis.tiles.clear();"],["\t\tthis.form = new Int32Array(0);\n\t\tthis.uses","\t\tthis.form = new Int32Array(0);\n\t\tthis.alternateForms.clear();\n\t\tthis.uses"],["\t\t\t\t\tif (tile) tile.added++;\n\t\t\t\t}\n\t\t\t\tif (this.seen[stem]","\t\t\t\t\tif (tile) tile.added++;\n\t\t\t\t} else if (id !== this.form[stem]) {\n\t\t\t\t\tlet forms = this.alternateForms.get(stem);\n\t\t\t\t\tif (!forms) this.alternateForms.set(stem, (forms = new Set()));\n\t\t\t\t\tforms.add(id);\n\t\t\t\t}\n\t\t\t\tif (this.seen[stem]"],["\t\tfor (const note of this.notes) {\n\t\t\tif (note.vocabulary?.status !== \"ready\") continue;\n\t\t\tfor (const id of note.vocabulary.ids) {\n\t\t\t\tconst stem = statistics.stemOf(id);\n\t\t\t\tif (!stems.has(stem) || id === this.form[stem]) continue;\n\t\t\t\tlet set = forms.get(stem);\n\t\t\t\tif (!set) forms.set(stem, set = new Set());\n\t\t\t\tset.add(statistics.word(id));\n\t\t\t}\n\t\t}","\t\tfor (const stem of stems) {\n\t\t\tconst ids = this.alternateForms.get(stem);\n\t\t\tif (ids) forms.set(stem, new Set(Array.from(ids, (id) => statistics.word(id))));\n\t\t}"]];
+  let baseline = candidate;
+  for (const [old, replacement] of edits.reverse()) baseline = baseline.replace(replacement, old);
+  assert.notEqual(baseline, candidate);
+  const hash = require('node:crypto').createHash('sha1').update('blob ' + Buffer.byteLength(baseline) + '\0').update(baseline).digest('hex');
+  assert.equal(hash, "81ea7471c146a58d91d11c5abd4bff7773979179");
+  const variants = [baseline, candidate, candidate, baseline].map(source => environment({newWords: source}).load('newWords').NewWordsMosaic);
   const STEMS = 2000, WORDS = 100, SELECTIONS = 12;
-  function sample(size, instrument) {
+  function sample(size, instrument, NewWordsMosaic) {
     const notes = [];
     const model = new Map();
     const first = new Map();
@@ -332,10 +339,54 @@ test('benchmark alternate vocabulary forms across repeated month selections', ()
   }
   console.log('FORMS_ENV ' + JSON.stringify({node: process.version, cpu: require('node:os').cpus()[0]?.model}));
   for (const size of [365, 2000, 10000]) {
-    sample(size, false);
-    const samples = Array.from({length: 5}, () => sample(size, false));
-    console.log('FORMS_RESULT ' + JSON.stringify({size, samples, operations: sample(size, true)}));
+    for (const [i, NewWordsMosaic] of variants.entries()) {
+      sample(size, false, NewWordsMosaic);
+      const samples = Array.from({length: 5}, () => sample(size, false, NewWordsMosaic));
+      const variant = i === 0 || i === 3 ? 'baseline' : 'candidate';
+      const operations = sample(size, true, NewWordsMosaic);
+      if (variant === 'candidate') {
+        assert.equal(operations.selectionLookups, 0);
+        assert.ok(operations.alternateIds <= STEMS * 2);
+      }
+      console.log('FORMS_RESULT ' + JSON.stringify({size, variant, samples, operations}));
+    }
   }
+});
+
+test('alternate vocabulary forms follow the active chronological fold and disappear on refresh', async () => {
+  const e = environment();
+  const {NewWordsMosaic} = e.load('newWords');
+  const a = new e.TFile('a.md'), b = new e.TFile('b.md'), c = new e.TFile('c.md');
+  const first = '2026-01-01', next = '2026-02-01', last = '2026-03-01';
+  const notes = new Map([[first, a], [next, b], [last, c]]);
+  const vocab = new Map([[a, {status: 'ready', ids: Uint32Array.from([1, 3, 0])}],
+    [b, {status: 'ready', ids: Uint32Array.from([2, 0, 4, 2])}], [c, {status: 'error'}]]);
+  const stats = {stemCount: 2, stemOf: id => Math.floor(id / 3), word: id => 'form-' + id,
+    peekVocabulary: file => vocab.get(file)};
+  const plugin = {statistics: stats, daily: {config: () => ({})},
+    index: {ensureCurrent() {}, keys: () => [...notes.keys()], pathsFor: key => [notes.get(key).path]},
+    app: {vault: {getAbstractFileByPath: path => [...notes.values()].find(file => file.path === path)}}};
+  const mosaic = new NewWordsMosaic({}, plugin);
+  mosaic.renderGrid = () => {};
+  mosaic.updateTiles = () => {};
+  mosaic.status = {setText() {}};
+  mosaic.renderWords = () => {};
+  await mosaic.refresh();
+  assert.equal(mosaic.frontier, 3);
+  assert.equal(mosaic.form[0], 1);
+  assert.equal(mosaic.uses[0], 2);
+  assert.deepEqual(Array.from(mosaic.otherForms(new Set([0])).get(0)), ['form-0', 'form-2']);
+  assert.deepEqual(Array.from(mosaic.otherForms(new Set([1])).get(1)), ['form-4']);
+  notes.delete(first);
+  await mosaic.refresh();
+  assert.equal(mosaic.frontier, 2);
+  assert.equal(mosaic.form[0], 2);
+  assert.equal(mosaic.uses[0], 1);
+  assert.deepEqual(Array.from(mosaic.otherForms(new Set([0])).get(0)), ['form-0']);
+  assert.equal(mosaic.otherForms(new Set([1])).has(1), false);
+  mosaic.onunload();
+  assert.equal(mosaic.alternateForms.size, 0);
+  assert.equal(e.timers.size, 0);
 });
 
 test('failed embedded-editor initialization unloads its instance before fallback', () => {
