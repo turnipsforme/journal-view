@@ -134,6 +134,84 @@ test('a failed internal editor read never saves an empty body and retries captur
   assert.equal(e.timers.size, 0);
 });
 
+test('benchmark search match rank across the journal', {skip: process.env.JOURNAL_PERF !== '1'}, () => {
+  const {FindResults} = environment().load('findResults');
+  function sample(size, instrument) {
+    const results = new FindResults();
+    const keys = Array.from({length: size}, (_, i) => new Date(Date.UTC(1970, 0, i + 1)).toISOString().slice(0, 10));
+    const prefix = [0];
+    for (let i = 0; i < size; i++) {
+      const count = i % 7 + 1;
+      results.set(keys[i], keys[i] + '.md', 0, count, 1);
+      results.set(keys[i], keys[i] + ' evening.md', 1, 2, 1);
+      prefix.push(prefix[i] + count + 2);
+    }
+    const queries = [];
+    for (let i = 0; i < 1000; i++) {
+      const at = i % 4 === 0 ? 0 : i % 4 === 1 ? size - 1 : Math.floor(((i * 7919) % size));
+      const step = i % 2 ? -1 : 1;
+      const path = keys[at] + ' evening.md';
+      const expected = (step > 0 ? prefix[at] : prefix[size] - prefix[at + 1]) + (at % 7 + 1) + 1;
+      queries.push({position: {key: keys[at], path, index: 1}, step, expected});
+    }
+    let lookups = 0;
+    if (instrument) {
+      const get = results.days.get.bind(results.days);
+      results.days.get = (...args) => {lookups++; return get(...args);};
+    }
+    const start = performance.now();
+    for (const {position, step, expected} of queries) assert.equal(results.indexOf(position, step), expected);
+    return {ms: performance.now() - start, lookups};
+  }
+  console.log('RANK_ENV ' + JSON.stringify({node: process.version, cpu: require('node:os').cpus()[0]?.model}));
+  for (const size of [365, 2000, 10000]) {
+    sample(size, false);
+    const samples = Array.from({length: 5}, () => sample(size, false));
+    console.log('RANK_RESULT ' + JSON.stringify({size, samples, lookups: sample(size, true).lookups}));
+  }
+});
+
+test('search ranks stay exact after insert, recount, move, deletion and prune', () => {
+  const {FindResults} = environment().load('findResults');
+  const r = new FindResults();
+  const keys = ['2026-01-01', '2026-01-02', '2026-01-03', '2026-01-04'];
+  const model = new Map();
+  const set = (key, path, order, count, generation) => {
+    r.set(key, path, order, count, generation);
+    if (count > 0) model.set(path, {key, path, order, count, generation});
+    else model.delete(path);
+  };
+  const check = () => {
+    for (const step of [-1, 1]) {
+      const sorted = [...model.values()].sort((a, b) =>
+        step * a.key.localeCompare(b.key) || a.order - b.order || a.path.localeCompare(b.path));
+      let index = 0;
+      for (const note of sorted) {
+        for (let i = 0; i < note.count; i++) {
+          assert.equal(r.indexOf({key: note.key, path: note.path, index: i}, step), index++);
+        }
+        assert.equal(r.indexOf({key: note.key, path: note.path, index: note.count}, step), -1);
+        assert.equal(r.indexOf({key: note.key, path: note.path, index: -1}, step), -1);
+      }
+      assert.equal(r.total, index);
+      assert.equal(r.indexOf({key: keys[0], path: 'missing', index: 0}, step), -1);
+    }
+  };
+  check();
+  set(keys[3], 'd', 0, 7, 1); check();
+  set(keys[0], 'a', 0, 2, 1);
+  set(keys[0], 'a2', 1, 3, 1);
+  set(keys[1], 'b', 0, 5, 2);
+  set(keys[2], 'c', 0, 4, 2); check();
+  set(keys[1], 'b', 0, 1, 3); check();
+  set(keys[3], 'c', 1, 2, 3); check();
+  r.delete('a'); model.delete('a'); check();
+  r.prune(2);
+  for (const [path, note] of model) if (note.generation < 2) model.delete(path);
+  check();
+  r.clear(); model.clear(); check();
+});
+
 test('editor document supplies current text when its convenience getter breaks', () => {
   const e = environment(); const {RichEditor} = e.load('editor');
   const editor = Object.create(RichEditor.prototype);

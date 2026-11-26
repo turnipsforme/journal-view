@@ -141,10 +141,15 @@ export class FindResults {
 		const note = day?.notes.find((candidate) => candidate.path === at.path);
 		if (!day || !note || at.index < 0 || at.index >= note.count) return -1;
 		let index = 0;
-		for (const key of this.keys) {
-			const before = step > 0 ? key < at.key : key > at.key;
-			if (before) index += this.days.get(key)!.count;
+		// Sum the shorter side, then use the total to get the other side if needed.
+		const fromStart = at.key < this.keys[this.keys.length >> 1];
+		const stride = fromStart ? 1 : -1;
+		for (let i = fromStart ? 0 : this.keys.length - 1; i >= 0 && i < this.keys.length; i += stride) {
+			const key = this.keys[i];
+			if (key === at.key) break;
+			index += this.days.get(key)!.count;
 		}
+		if ((step > 0) !== fromStart) index = this.total - day.count - index;
 		for (const other of day.notes) {
 			if (other === note) break;
 			index += other.count;
