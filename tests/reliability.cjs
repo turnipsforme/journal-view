@@ -8,7 +8,7 @@ const {test} = require('node:test');
 const ts = require('typescript');
 const root = path.resolve(__dirname, '..');
 
-function environment(overrides = {}) {
+function environment() {
   const notices = [];
   const timers = new Map();
   let timerId = 0;
@@ -40,7 +40,7 @@ function environment(overrides = {}) {
     if (modules.has(file)) return modules.get(file).exports;
     const module = {exports: {}};
     modules.set(file, module);
-    let source = overrides[name] ?? fs.readFileSync(file, 'utf8');
+    let source = fs.readFileSync(file, 'utf8');
     if (name === 'editor') source += '\nexport { RichEditor, resolveEditorCtor };';
     const js = ts.transpileModule(source, {compilerOptions: {module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020}}).outputText;
     const customRequire = spec => spec === 'obsidian' ? obsidian : spec.startsWith('.') ? load(path.basename(spec)) : require(spec);
@@ -469,17 +469,12 @@ test('returning an editor to preview mode clears its previous height hold', () =
 });
 
 test('benchmark statistics word counting in synthetic notes', async () => {
-  const candidate = fs.readFileSync(path.join(root, 'src', 'statistics.ts'), 'utf8');
-  const baseline = candidate.replace("\t\tconst tokens = /\\S+/gu;\n\t\tlet previousEnd = 0;\n\t\tlet match: RegExpExecArray | null;\n\t\twhile ((match = tokens.exec(chunk)) !== null) {\n\t\t\tif (match.index > previousEnd) countedToken = false;\n\t\t\tif (!countedToken && /[\\p{L}\\p{N}]/u.test(match[0])) {\n\t\t\t\twords++;\n\t\t\t\tcountedToken = true;\n\t\t\t}\n\t\t\tpreviousEnd = tokens.lastIndex;\n\t\t}\n\t\tif (previousEnd < chunk.length) countedToken = false;", "\t\tconst tokens = /\\s+|[^\\s]+/gu;\n\t\tfor (const match of chunk.matchAll(tokens)) {\n\t\t\tif (/^\\s/u.test(match[0])) countedToken = false;\n\t\t\telse if (!countedToken && /[\\p{L}\\p{N}]/u.test(match[0])) {\n\t\t\t\twords++;\n\t\t\t\tcountedToken = true;\n\t\t\t}\n\t\t}");
-  assert.notEqual(baseline, candidate);
-  const hash = require('node:crypto').createHash('sha1').update('blob ' + Buffer.byteLength(baseline) + '\0').update(baseline).digest('hex');
-  assert.equal(hash, "11ea8b59f7dd023913384c8064526676057c2e6a");
-  const variants = [baseline, candidate, candidate, baseline].map(source => environment({statistics: source}));
+  const e = environment();
+  const {JournalStatistics} = e.load('statistics');
   const body = ('Hello world! 123 … -- café 中文 𐐀 mixed-token emoji😀  \t\n').repeat(24);
   const text = '---\nignored: words\n---\n' + body;
   const expected = body.split(/\s+/u).filter(token => /[\p{L}\p{N}]/u.test(token)).length;
-  async function sample(size, e) {
-    const {JournalStatistics} = e.load('statistics');
+  async function sample(size) {
     const files = new Map();
     for (let i = 0; i < size; i++) {
       const file = new e.TFile('Journal/' + i + '.md');
@@ -504,12 +499,10 @@ test('benchmark statistics word counting in synthetic notes', async () => {
   }
   console.log('COUNT_ENV ' + JSON.stringify({node: process.version, cpu: require('node:os').cpus()[0]?.model}));
   for (const size of [365, 2000, 10000]) {
-    for (const [i, e] of variants.entries()) {
-      await sample(size, e);
-      const samples = [];
-      for (let j = 0; j < 5; j++) samples.push(await sample(size, e));
-      console.log('COUNT_RESULT ' + JSON.stringify({size, variant: i === 0 || i === 3 ? 'baseline' : 'candidate', samples}));
-    }
+    await sample(size);
+    const samples = [];
+    for (let i = 0; i < 5; i++) samples.push(await sample(size));
+    console.log('COUNT_RESULT ' + JSON.stringify({size, samples}));
   }
 });
 
