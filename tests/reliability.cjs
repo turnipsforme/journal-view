@@ -467,3 +467,41 @@ test('returning an editor to preview mode clears its previous height hold', () =
   f.entry.applyPreview({component: {}, container: {}}, 'note body');
   assert.equal(f.minimum(), 0); assert.equal(f.entry.editor, null);
 });
+
+test('benchmark statistics word counting in synthetic notes', async () => {
+  const e = environment();
+  const {JournalStatistics} = e.load('statistics');
+  const body = ('Hello world! 123 … -- café 中文 𐐀 mixed-token emoji😀  \t\n').repeat(24);
+  const text = '---\nignored: words\n---\n' + body;
+  const expected = body.split(/\s+/u).filter(token => /[\p{L}\p{N}]/u.test(token)).length;
+  async function sample(size) {
+    const files = new Map();
+    for (let i = 0; i < size; i++) {
+      const file = new e.TFile('Journal/' + i + '.md');
+      file.stat = {mtime: 1, size: text.length};
+      files.set(file.path, file);
+    }
+    let reads = 0;
+    const stats = new JournalStatistics({vault: {
+      cachedRead: async () => {reads++; return text;},
+      getAbstractFileByPath: path => files.get(path),
+    }});
+    const start = performance.now();
+    for (const file of files.values()) {
+      const result = await stats.count(file, () => true);
+      assert.equal(result?.status, 'ready');
+      assert.equal(result.words, expected);
+    }
+    const ms = performance.now() - start;
+    assert.equal(reads, size);
+    stats.onunload();
+    return {ms, reads};
+  }
+  console.log('COUNT_ENV ' + JSON.stringify({node: process.version, cpu: require('node:os').cpus()[0]?.model}));
+  for (const size of [365, 2000, 10000]) {
+    await sample(size);
+    const samples = [];
+    for (let i = 0; i < 5; i++) samples.push(await sample(size));
+    console.log('COUNT_RESULT ' + JSON.stringify({size, samples}));
+  }
+});
