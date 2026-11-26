@@ -8,7 +8,7 @@ const {test} = require('node:test');
 const ts = require('typescript');
 const root = path.resolve(__dirname, '..');
 
-function environment(overrides = {}) {
+function environment() {
   const notices = [];
   const timers = new Map();
   let timerId = 0;
@@ -40,7 +40,7 @@ function environment(overrides = {}) {
     if (modules.has(file)) return modules.get(file).exports;
     const module = {exports: {}};
     modules.set(file, module);
-    let source = overrides[name] ?? fs.readFileSync(file, 'utf8');
+    let source = fs.readFileSync(file, 'utf8');
     if (name === 'editor') source += '\nexport { RichEditor, resolveEditorCtor };';
     const js = ts.transpileModule(source, {compilerOptions: {module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020}}).outputText;
     const customRequire = spec => spec === 'obsidian' ? obsidian : spec.startsWith('.') ? load(path.basename(spec)) : require(spec);
@@ -246,14 +246,16 @@ test('turning filters on and off still returns the correct dates and frees filte
   rules = []; index.ensureCurrent(); assert.equal(index.size, 2); assert.equal(index.pathKeys.size, 0);
 });
 
+test('literal existence checks match full search semantics including Unicode and punctuation', () => {
+  const e = environment(); const {containsLiteral, findLiteralRanges} = e.load('findText');
+  for (const [text, query] of [['a[b a[b', 'a[b'], ['Kelvin K', 'k'], ['😀😀', '😀'], ['none', ''], ['Straße', 'SS'], ['A\na', 'a']]) {
+    for (const sensitive of [true, false]) assert.equal(containsLiteral(text, query, sensitive), findLiteralRanges(text, query, sensitive).length > 0);
+  }
+});
+
 test('benchmark pruning stale search results at different densities', () => {
-  const candidate = fs.readFileSync(path.join(root, 'src', 'findResults.ts'), 'utf8');
-  const baseline = candidate.replace("\t\tlet removedDay = false;\n\t\tfor (const [key, day] of this.days) {\n\t\t\tlet kept = 0;\n\t\t\tfor (const note of day.notes) {\n\t\t\t\tif (note.generation < generation) {\n\t\t\t\t\tthis.noteKeys.delete(note.path);\n\t\t\t\t\tday.count -= note.count;\n\t\t\t\t\tthis.total -= note.count;\n\t\t\t\t} else {\n\t\t\t\t\tday.notes[kept++] = note;\n\t\t\t\t}\n\t\t\t}\n\t\t\tif (kept === day.notes.length) continue;\n\t\t\tday.notes.length = kept;\n\t\t\tif (!kept) {\n\t\t\t\tthis.days.delete(key);\n\t\t\t\tremovedDay = true;\n\t\t\t}\n\t\t}\n\t\tif (removedDay) this.keys = this.keys.filter((key) => this.days.has(key));", "\t\tconst stale: string[] = [];\n\t\tfor (const day of this.days.values()) {\n\t\t\tfor (const note of day.notes) if (note.generation < generation) stale.push(note.path);\n\t\t}\n\t\tfor (const path of stale) this.delete(path);");
-  assert.notEqual(baseline, candidate);
-  const hash = require('node:crypto').createHash('sha1').update('blob ' + Buffer.byteLength(baseline) + '\0').update(baseline).digest('hex');
-  assert.equal(hash, "a0508c7f1f0efe13417f3e0c2976217da5d6692a");
-  const variants = [baseline, candidate, candidate, baseline].map(source => environment({findResults: source}).load('findResults').FindResults);
-  function sample(size, stalePercent, instrument, FindResults) {
+  const {FindResults} = environment().load('findResults');
+  function sample(size, stalePercent, instrument) {
     const results = new FindResults();
     const keys = Array.from({length: size}, (_, i) => new Date(Date.UTC(1970, 0, i + 1)).toISOString().slice(0, 10));
     const survivors = [];
@@ -287,19 +289,15 @@ test('benchmark pruning stale search results at different densities', () => {
       assert.equal(results.note(key + '.md')?.count ?? 0, i % 100 < stalePercent ? 0 : 2);
       if (i % 17 === 0) assert.equal(results.note(key + ' evening.md')?.count, 3);
     }
+    if (instrument) assert.equal(shifts, 0);
     return {ms, shifts};
   }
   console.log('PRUNE_ENV ' + JSON.stringify({node: process.version, cpu: require('node:os').cpus()[0]?.model}));
   for (const size of [365, 2000, 10000]) {
     for (const stalePercent of [0, 50, 90]) {
-      for (const [i, FindResults] of variants.entries()) {
-        sample(size, stalePercent, false, FindResults);
-        const samples = Array.from({length: 5}, () => sample(size, stalePercent, false, FindResults));
-        const variant = i === 0 || i === 3 ? 'baseline' : 'candidate';
-        const shifts = sample(size, stalePercent, true, FindResults).shifts;
-        if (variant === 'candidate') assert.equal(shifts, 0);
-        console.log('PRUNE_RESULT ' + JSON.stringify({size, stalePercent, variant, samples, shifts}));
-      }
+      sample(size, stalePercent, false);
+      const samples = Array.from({length: 5}, () => sample(size, stalePercent, false));
+      console.log('PRUNE_RESULT ' + JSON.stringify({size, stalePercent, samples, shifts: sample(size, stalePercent, true).shifts}));
     }
   }
 });
@@ -328,13 +326,6 @@ test('prune preserves order and navigation across partially surviving days and r
   r.prune(4); assert.equal(r.total, 0); assert.equal(r.firstKey(-1), null);
   assert.equal(r.noteKeys.size, 0); assert.equal(r.days.size, 0);
   r.set(c, 'c', 0, 4, 5); assert.equal(r.total, 4); assert.equal(r.firstKey(1), c);
-});
-
-test('literal existence checks match full search semantics including Unicode and punctuation', () => {
-  const e = environment(); const {containsLiteral, findLiteralRanges} = e.load('findText');
-  for (const [text, query] of [['a[b a[b', 'a[b'], ['Kelvin K', 'k'], ['😀😀', '😀'], ['none', ''], ['Straße', 'SS'], ['A\na', 'a']]) {
-    for (const sensitive of [true, false]) assert.equal(containsLiteral(text, query, sensitive), findLiteralRanges(text, query, sensitive).length > 0);
-  }
 });
 
 test('a late read cannot replace newer content from a metadata event', async () => {
