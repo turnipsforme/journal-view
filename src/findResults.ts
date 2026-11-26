@@ -54,7 +54,22 @@ export class FindResults {
 
 	/** Records how many times the note matches, replacing whatever it had. */
 	set(key: string, path: string, order: number, count: number, generation: number): void {
-		this.delete(path);
+		const previousKey = this.noteKeys.get(path);
+		if (previousKey !== undefined) {
+			if (previousKey === key && count > 0) {
+				const day = this.days.get(key);
+				const note = day?.notes.find((candidate) => candidate.path === path);
+				if (day && note && note.order === order) {
+					const delta = count - note.count;
+					note.count = count;
+					note.generation = generation;
+					day.count += delta;
+					this.total += delta;
+					return;
+				}
+			}
+			this.delete(path);
+		}
 		if (count <= 0) return;
 		let day = this.days.get(key);
 		if (!day) {

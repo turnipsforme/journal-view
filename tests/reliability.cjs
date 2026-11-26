@@ -204,6 +204,64 @@ test('undo during a delayed save leaves the final editor text on disk', async ()
   assert.equal(f.files.get(f.entry.path), 'original'); assert.equal(f.entry.isDirty, false);
 });
 
+test('benchmark recounting existing search results', () => {
+  const {FindResults} = environment().load('findResults');
+  function sample(size, instrument) {
+    const keys = Array.from({length: size}, (_, i) => new Date(Date.UTC(1970, 0, 1 + i)).toISOString().slice(0, 10));
+    const results = new FindResults();
+    for (const key of keys) results.set(key, key + '.md', 0, 2, 1);
+    let shifts = 0;
+    if (instrument) {
+      const splice = results.keys.splice.bind(results.keys);
+      results.keys.splice = (...args) => {shifts++; return splice(...args);};
+    }
+    const start = performance.now();
+    for (const key of keys) results.set(key, key + '.md', 0, 3, 2);
+    const ms = performance.now() - start;
+    results.prune(2);
+    assert.equal(results.total, size * 3);
+    assert.equal(results.indexOf(results.first(keys[Math.floor(size / 2)]), 1), Math.floor(size / 2) * 3);
+    assert.equal(results.indexOf(results.first(keys[Math.floor(size / 2)]), -1), (size - 1 - Math.floor(size / 2)) * 3);
+    if (instrument) assert.equal(shifts, 0);
+    return {ms, shifts};
+  }
+  console.log('RECOUNT_ENV ' + JSON.stringify({node: process.version, cpu: require('node:os').cpus()[0]?.model}));
+  for (const size of [365, 2000, 10000]) {
+    sample(size, false);
+    const samples = Array.from({length: 5}, () => sample(size, false));
+    console.log('RECOUNT_RESULT ' + JSON.stringify({size, samples, shifts: sample(size, true).shifts}));
+  }
+});
+
+test('search recount updates counts and generations without disturbing result order', () => {
+  const {FindResults} = environment().load('findResults');
+  const r = new FindResults();
+  const day = '2026-11-26', later = '2026-11-27';
+  r.set(day, 'b', 1, 2, 1);
+  r.set(day, 'a', 0, 1, 1);
+  r.set(later, 'c', 0, 3, 1);
+  r.set(day, 'b', 1, 5, 2);
+  r.set(day, 'a', 0, 1, 2); // unchanged count still updates generation
+  r.prune(2);
+  assert.equal(r.total, 6);
+  assert.equal(r.first(day).path, 'a');
+  assert.equal(r.last(day).path, 'b');
+  assert.equal(r.indexOf({key: day, path: 'b', index: 4}, 1), 5);
+  assert.equal(r.indexOf({key: day, path: 'b', index: 4}, -1), 5);
+  r.set(day, 'b', -1, 5, 3); // order changed
+  assert.equal(r.first(day).path, 'b');
+  r.set(later, 'b', 0, 4, 3); // path moved to another day
+  assert.equal(r.first(day).path, 'a');
+  assert.equal(r.first(later).path, 'b');
+  assert.equal(r.total, 5);
+  r.set(day, 'a', 0, 0, 3);
+  assert.equal(r.first(day), null);
+  assert.equal(r.total, 4);
+  r.delete('b');
+  assert.equal(r.total, 0);
+  assert.equal(r.firstKey(1), null);
+});
+
 test('cancelled search cannot select a result after an outstanding day load returns', async () => {
   const e = environment(); const {JournalFind} = e.load('find');
   let finish; let synced = 0; let selections = 0;
