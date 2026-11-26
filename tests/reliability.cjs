@@ -761,6 +761,121 @@ test('only the newest concurrent rebuild proceeds after delayed saves', async ()
   pending[0](); pending[1](); await Promise.all([first, second]); assert.deepEqual(builds, ['second']);
 });
 
+test('benchmark alternate vocabulary forms across repeated month selections', {skip: process.env.JOURNAL_PERF !== '1'}, () => {
+  const {NewWordsMosaic} = environment().load('newWords');
+  const STEMS = 2000, WORDS = 100, SELECTIONS = 12;
+  function sample(size, instrument) {
+    const notes = [];
+    const model = new Map();
+    const first = new Map();
+    let calls = 0;
+    const statistics = {
+      stemCount: STEMS, wordCount: STEMS * 3,
+      stemOf(id) {if (instrument) calls++; return Math.floor(id / 3);},
+      word(id) {return 'form-' + id;},
+    };
+    for (let n = 0; n < size; n++) {
+      const ids = Uint32Array.from({length: WORDS}, (_, i) => ((n * 37 + i * 19) % STEMS) * 3 + ((n + i) % 3));
+      notes.push({month: Math.floor(n / 30), vocabulary: {status: 'ready', ids}});
+      for (const id of ids) {
+        const stem = Math.floor(id / 3);
+        if (!first.has(stem)) first.set(stem, id);
+        else if (first.get(stem) !== id) {
+          if (!model.has(stem)) model.set(stem, new Set());
+          model.get(stem).add('form-' + id);
+        }
+      }
+    }
+    const mosaic = new NewWordsMosaic({}, {statistics});
+    mosaic.notes = notes;
+    mosaic.updateTiles = () => {};
+    const startFold = performance.now();
+    mosaic.advance();
+    const foldMs = performance.now() - startFold;
+    assert.equal(mosaic.frontier, size);
+    assert.equal(mosaic.alternateSeen.length, 0);
+    const foldLookups = calls;
+    const queries = Array.from({length: SELECTIONS}, (_, i) =>
+      new Set(Array.from({length: i % 3 === 0 ? 20 : i % 3 === 1 ? 100 : 300}, (_, j) => (i * 113 + j * 7) % STEMS)));
+    const start = performance.now();
+    const results = queries.map(query => mosaic.otherForms(query));
+    const ms = performance.now() - start;
+    for (let i = 0; i < queries.length; i++) {
+      const actual = results[i], query = queries[i];
+      assert.equal(actual.size, [...query].filter(stem => model.has(stem)).length);
+      for (const stem of query) assert.deepEqual(Array.from(actual.get(stem) ?? []), Array.from(model.get(stem) ?? []));
+    }
+    if (instrument) assert.equal(calls - foldLookups, 0);
+    return {ms, foldMs, foldLookups, selectionLookups: calls - foldLookups,
+      alternateIds: mosaic.alternateForms ? [...mosaic.alternateForms.values()].reduce((n, ids) => n + ids.size, 0) : 0};
+  }
+  console.log('FORMS_ENV ' + JSON.stringify({node: process.version, cpu: require('node:os').cpus()[0]?.model}));
+  for (const size of [365, 2000, 10000]) {
+    sample(size, false);
+    const samples = Array.from({length: 5}, () => sample(size, false));
+    console.log('FORMS_RESULT ' + JSON.stringify({size, samples, operations: sample(size, true)}));
+  }
+});
+
+test('alternate vocabulary forms follow the active chronological fold and disappear on refresh', async () => {
+  const e = environment();
+  const {NewWordsMosaic} = e.load('newWords');
+  const a = new e.TFile('a.md'), b = new e.TFile('b.md'), c = new e.TFile('c.md');
+  const first = '2026-01-01', next = '2026-02-01', last = '2026-03-01';
+  const notes = new Map([[first, a], [next, b], [last, c]]);
+  const vocab = new Map([[a, {status: 'ready', ids: Uint32Array.from([1, 3, 0])}],
+    [b, {status: 'ready', ids: Uint32Array.from([2, 0, 4, 2])}], [c, {status: 'error'}]]);
+  const stats = {stemCount: 2, wordCount: 6, stemOf: id => Math.floor(id / 3), word: id => 'form-' + id,
+    peekVocabulary: file => vocab.get(file)};
+  const plugin = {statistics: stats, daily: {config: () => ({})},
+    index: {ensureCurrent() {}, keys: () => [...notes.keys()], pathsFor: key => [notes.get(key).path]},
+    app: {vault: {getAbstractFileByPath: path => [...notes.values()].find(file => file.path === path)}}};
+  const mosaic = new NewWordsMosaic({}, plugin);
+  mosaic.renderGrid = () => {};
+  mosaic.updateTiles = () => {};
+  mosaic.status = {setText() {}};
+  mosaic.renderWords = () => {};
+  await mosaic.refresh();
+  assert.equal(mosaic.frontier, 3);
+  assert.equal(mosaic.form[0], 1);
+  assert.equal(mosaic.uses[0], 2);
+  assert.deepEqual(Array.from(mosaic.otherForms(new Set([0])).get(0)), ['form-0', 'form-2']);
+  assert.deepEqual(Array.from(mosaic.otherForms(new Set([1])).get(1)), ['form-4']);
+  notes.delete(first);
+  await mosaic.refresh();
+  assert.equal(mosaic.frontier, 2);
+  assert.equal(mosaic.form[0], 2);
+  assert.equal(mosaic.uses[0], 1);
+  assert.deepEqual(Array.from(mosaic.otherForms(new Set([0])).get(0)), ['form-0']);
+  assert.equal(mosaic.otherForms(new Set([1])).has(1), false);
+  mosaic.onunload();
+  assert.equal(mosaic.alternateForms.size, 0);
+  assert.equal(mosaic.alternateSeen.length, 0);
+  assert.equal(e.timers.size, 0);
+});
+
+test('temporary alternate ID marks grow across partially read vocabulary and are released', () => {
+  const {NewWordsMosaic} = environment().load('newWords');
+  const stats = {stemCount: 2, wordCount: 3, stemOf: id => id < 3 ? 0 : 1, word: id => 'form-' + id};
+  const mosaic = new NewWordsMosaic({}, {statistics: stats});
+  mosaic.updateTiles = () => {};
+  mosaic.notes = [{month: 1, vocabulary: {status: 'ready', ids: Uint32Array.from([0, 1])}},
+    {month: 2, vocabulary: null}];
+  mosaic.advance();
+  assert.equal(mosaic.frontier, 1);
+  assert.ok(mosaic.alternateSeen.length >= 3);
+  assert.equal(mosaic.alternateSeen[1], 1);
+  stats.wordCount = 1202;
+  mosaic.notes[1].vocabulary = {status: 'ready', ids: Uint32Array.from([1, 2, 1200, 1201])};
+  mosaic.advance();
+  assert.equal(mosaic.frontier, 2);
+  assert.deepEqual(Array.from(mosaic.otherForms(new Set([0])).get(0)), ['form-1', 'form-2']);
+  assert.deepEqual(Array.from(mosaic.otherForms(new Set([1])).get(1)), ['form-1201']);
+  assert.equal(mosaic.alternateSeen.length, 0);
+  mosaic.advance();
+  assert.equal(mosaic.alternateSeen.length, 0);
+});
+
 test('failed embedded-editor initialization unloads its instance before fallback', () => {
   const e = environment(); const {RichEditor} = e.load('editor'); let destroyed = 0; let unloaded = 0;
   class BrokenEditor {get() {return ''} set() {} load() {throw new Error('load failed')} destroy() {destroyed++} unload() {unloaded++}}

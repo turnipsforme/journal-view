@@ -137,6 +137,11 @@ export class JournalStatistics extends Component {
 		for (const listener of this.listeners) listener(paths, true);
 	}
 
+	/** One more than the largest word id handed out so far. */
+	get wordCount(): number {
+		return this.words.length;
+	}
+
 	/** One more than the largest stem id handed out so far. */
 	get stemCount(): number {
 		return this.stemIds.size;
