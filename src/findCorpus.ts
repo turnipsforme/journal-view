@@ -6,6 +6,14 @@ const RELEASE_DELAY = 5 * 60 * 1000;
 /** Reads retried when the note changes while being read, before settling for what came back. */
 const READ_ATTEMPTS = 3;
 
+interface PendingRead {
+	path: string;
+	mtime: number;
+	size: number;
+	revision: number;
+	promise: Promise<string>;
+}
+
 interface CachedText {
 	file: TFile;
 	mtime: number;
@@ -24,6 +32,7 @@ interface CachedText {
  */
 export class FindCorpus extends Component {
 	private texts = new Map<string, CachedText>();
+	private pending = new Map<TFile, PendingRead>();
 	/** Bumped when a file changes, so a read already under way is not kept. */
 	private revisions = new WeakMap<TFile, number>();
 	private listeners = new Set<(paths: string[]) => void>();
@@ -51,6 +60,7 @@ export class FindCorpus extends Component {
 		window.clearTimeout(this.releaseTimer);
 		this.releaseTimer = 0;
 		this.texts.clear();
+		this.pending.clear();
 		this.listeners.clear();
 	}
 
@@ -87,6 +97,7 @@ export class FindCorpus extends Component {
 	/** The note's body, read and cached if needed; null when it cannot be read. */
 	async read(file: TFile): Promise<string | null> {
 		for (let attempt = 0; ; attempt++) {
+			if (this.closed) return null;
 			const hit = this.peek(file);
 			if (hit !== null) return hit;
 			const path = file.path;
@@ -94,12 +105,20 @@ export class FindCorpus extends Component {
 			const revision = this.revisions.get(file) ?? 0;
 			this.revisions.set(file, revision);
 			let text: string;
+			let read = this.pending.get(file);
 			try {
-				text = editorBody(await this.app.vault.cachedRead(file));
+				if (!read || read.path !== path || read.mtime !== mtime || read.size !== size || read.revision !== revision) {
+					read = { path, mtime, size, revision, promise: this.app.vault.cachedRead(file).then(editorBody) };
+					this.pending.set(file, read);
+				}
+				text = await read.promise;
 			} catch (error) {
 				console.warn(`Journal View: could not search ${path}`, error);
 				return null;
+			} finally {
+				if (this.pending.get(file) === read) this.pending.delete(file);
 			}
+			if (this.closed || this.app.vault.getAbstractFileByPath(file.path) !== file) return null;
 			const unchanged =
 				(this.revisions.get(file) ?? 0) === revision &&
 				file.path === path &&
@@ -123,8 +142,13 @@ export class FindCorpus extends Component {
 		for (const key of this.texts.keys()) {
 			if (paths.some((path) => key.startsWith(`${path}/`))) changed.push(key);
 		}
+		for (const [file, read] of this.pending) {
+			if (!paths.some((path) => read.path.startsWith(`${path}/`) || file.path.startsWith(`${path}/`))) continue;
+			this.revisions.set(file, (this.revisions.get(file) ?? 0) + 1);
+			changed.push(read.path, file.path);
+		}
 		for (const path of changed) this.texts.delete(path);
-		this.notify([...paths, ...changed]);
+		this.notify([...paths, ...new Set(changed)]);
 	}
 
 	private notify(paths: string[]): void {
