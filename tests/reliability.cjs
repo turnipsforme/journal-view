@@ -246,6 +246,124 @@ test('turning filters on and off still returns the correct dates and frees filte
   rules = []; index.ensureCurrent(); assert.equal(index.size, 2); assert.equal(index.pathKeys.size, 0);
 });
 
+test('benchmark incremental unfiltered index updates on synthetic vaults', () => {
+  const e = environment();
+  const {FilteredDailyNoteIndex} = e.load('filter');
+  const rules = [];
+  function sample(size) {
+    const files = new Map();
+    const keys = new Set();
+    let resolutions = 0;
+    let metadataLookups = 0;
+    let lastPath = null;
+    const base = {
+      version: 0, ensureCurrent() {},
+      changedSince(version) {
+        if (version === this.version) return [];
+        return version === this.version - 1 && lastPath ? [lastPath] : null;
+      },
+      keyForPath(path) {resolutions++; return path.slice(8, -3);},
+      has: key => keys.has(key),
+      get size() {return keys.size;},
+    };
+    const index = new FilteredDailyNoteIndex({
+      vault: {
+        getMarkdownFiles: () => [...files.values()],
+        getAbstractFileByPath: path => files.get(path) ?? null,
+      },
+      metadataCache: {getFileCache() {metadataLookups++; return null;}},
+    }, base, () => rules);
+    index.ensureCurrent();
+    const incoming = Array.from({length: size}, (_, i) => {
+      const key = new Date(Date.UTC(1970, 0, 1 + i)).toISOString().slice(0, 10);
+      return {key, file: new e.TFile('Journal/' + key + '.md')};
+    });
+    const start = performance.now();
+    for (const {key, file} of incoming) {
+      keys.add(key);
+      files.set(file.path, file);
+      lastPath = file.path;
+      base.version++;
+      index.ensureCurrent();
+    }
+    const ms = performance.now() - start;
+    assert.equal(index.size, size);
+    assert.equal(index.has(incoming[0].key), true);
+    assert.equal(index.has(incoming[size - 1].key), true);
+    const membershipEntries = ['keys', 'matchingPaths', 'pathKeys', 'matchingCounts']
+      .reduce((sum, field) => sum + index[field].size, 0);
+    return {ms, resolutions, metadataLookups, membershipEntries};
+  }
+  console.log('INCREMENTAL_ENV ' + JSON.stringify({node: process.version, cpu: require('node:os').cpus()[0]?.model}));
+  for (const size of [365, 2000, 10000]) {
+    sample(size);
+    const samples = Array.from({length: 5}, () => sample(size));
+    const median = {};
+    for (const key of Object.keys(samples[0])) {
+      median[key] = samples.map(row => row[key]).sort((a, b) => a - b)[2];
+    }
+    console.log('INCREMENTAL_RESULT ' + JSON.stringify({size, median, samples}));
+  }
+});
+
+test('unfiltered incremental projection stays empty and active rules rebuild correctly', () => {
+  const e = environment();
+  const {FilteredDailyNoteIndex} = e.load('filter');
+  const files = new Map();
+  const keys = new Set();
+  let rules = [];
+  let lastPath;
+  let lookups = 0;
+  const base = {
+    version: 0, ensureCurrent() {}, resolvedConfig: () => ({}),
+    changedSince(version) {
+      if (version === this.version) return [];
+      return version === this.version - 1 && lastPath ? [lastPath] : null;
+    },
+    keyForPath: path => path.slice(8, -3),
+    has: key => keys.has(key),
+    get size() {return keys.size;},
+  };
+  const index = new FilteredDailyNoteIndex({
+    vault: {getMarkdownFiles: () => [...files.values()], getAbstractFileByPath: path => files.get(path) ?? null},
+    metadataCache: {getFileCache(file) {lookups++; return {frontmatter: {include: file.path.includes('01.md')}};}},
+  }, base, () => rules);
+  function change(key, exists) {
+    const path = 'Journal/' + key + '.md';
+    if (exists) {files.set(path, new e.TFile(path)); keys.add(key);}
+    else {files.delete(path); keys.delete(key);}
+    lastPath = path; base.version++; index.ensureCurrent();
+    assert.equal(index.baseVersion, base.version);
+  }
+  const empty = () => {
+    for (const field of ['keys', 'matchingPaths', 'pathKeys', 'matchingCounts']) assert.equal(index[field].size, 0);
+  };
+  index.ensureCurrent();
+  change('2026-01-01', true);
+  change('2026-01-02', true);
+  assert.equal(index.size, 2);
+  assert.equal(index.has('2026-01-02'), true);
+  empty(); assert.equal(lookups, 0);
+  rules = [{kind: 'property', mode: 'include', property: 'include', value: true}];
+  index.ensureCurrent();
+  assert.equal(index.size, 1);
+  assert.equal(index.has('2026-01-01'), true);
+  assert.equal(index.has('2026-01-02'), false);
+  change('2026-01-01', false);
+  assert.equal(index.size, 0);
+  change('2026-02-01', true);
+  assert.equal(index.size, 1);
+  assert.equal(index.has('2026-02-01'), true);
+  rules = []; index.ensureCurrent(); empty();
+  const prior = lookups;
+  change('2026-02-01', false);
+  change('2026-02-02', true);
+  assert.equal(index.size, 2);
+  assert.equal(index.has('2026-02-01'), false);
+  assert.equal(index.has('2026-02-02'), true);
+  empty(); assert.equal(lookups, prior);
+});
+
 test('literal existence checks match full search semantics including Unicode and punctuation', () => {
   const e = environment(); const {containsLiteral, findLiteralRanges} = e.load('findText');
   for (const [text, query] of [['a[b a[b', 'a[b'], ['Kelvin K', 'k'], ['😀😀', '😀'], ['none', ''], ['Straße', 'SS'], ['A\na', 'a']]) {
