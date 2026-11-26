@@ -113,11 +113,26 @@ export class FindResults {
 
 	/** Drops every note no pass since `generation` counted: deleted, renamed away, or filtered out. */
 	prune(generation: number): void {
-		const stale: string[] = [];
-		for (const day of this.days.values()) {
-			for (const note of day.notes) if (note.generation < generation) stale.push(note.path);
+		let removedDay = false;
+		for (const [key, day] of this.days) {
+			let kept = 0;
+			for (const note of day.notes) {
+				if (note.generation < generation) {
+					this.noteKeys.delete(note.path);
+					day.count -= note.count;
+					this.total -= note.count;
+				} else {
+					day.notes[kept++] = note;
+				}
+			}
+			if (kept === day.notes.length) continue;
+			day.notes.length = kept;
+			if (!kept) {
+				this.days.delete(key);
+				removedDay = true;
+			}
 		}
-		for (const path of stale) this.delete(path);
+		if (removedDay) this.keys = this.keys.filter((key) => this.days.has(key));
 	}
 
 	/** Where `at` falls among all matches, from 0 at the top of the timeline; -1 when it is not one. */

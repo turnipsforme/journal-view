@@ -430,6 +430,81 @@ test('literal existence checks match full search semantics including Unicode and
   }
 });
 
+test('benchmark pruning stale search results at different densities', () => {
+  const {FindResults} = environment().load('findResults');
+  function sample(size, stalePercent, instrument) {
+    const results = new FindResults();
+    const keys = Array.from({length: size}, (_, i) => new Date(Date.UTC(1970, 0, i + 1)).toISOString().slice(0, 10));
+    const survivors = [];
+    let total = 0;
+    for (let i = 0; i < size; i++) {
+      const key = keys[i];
+      const stale = i % 100 < stalePercent;
+      results.set(key, key + '.md', 0, 2, stale ? 1 : 2);
+      if (!stale) {survivors.push(key); total += 2;}
+      if (i % 17 === 0) {
+        results.set(key, key + ' evening.md', 1, 3, 2);
+        if (stale) survivors.push(key);
+        total += 3;
+      }
+    }
+    let shifts = 0;
+    if (instrument) {
+      const splice = results.keys.splice.bind(results.keys);
+      results.keys.splice = (...args) => {shifts++; return splice(...args);};
+    }
+    const start = performance.now();
+    results.prune(2);
+    const ms = performance.now() - start;
+    assert.equal(results.total, total);
+    assert.deepEqual(Array.from(results.keys), survivors);
+    assert.equal(results.noteKeys.size, size - keys.filter((_, i) => i % 100 < stalePercent).length + Math.ceil(size / 17));
+    assert.equal(results.firstKey(1), survivors[0] ?? null);
+    assert.equal(results.firstKey(-1), survivors.at(-1) ?? null);
+    for (let i = 0; i < size; i++) {
+      const key = keys[i];
+      assert.equal(results.note(key + '.md')?.count ?? 0, i % 100 < stalePercent ? 0 : 2);
+      if (i % 17 === 0) assert.equal(results.note(key + ' evening.md')?.count, 3);
+    }
+    if (instrument) assert.equal(shifts, 0);
+    return {ms, shifts};
+  }
+  console.log('PRUNE_ENV ' + JSON.stringify({node: process.version, cpu: require('node:os').cpus()[0]?.model}));
+  for (const size of [365, 2000, 10000]) {
+    for (const stalePercent of [0, 50, 90]) {
+      sample(size, stalePercent, false);
+      const samples = Array.from({length: 5}, () => sample(size, stalePercent, false));
+      console.log('PRUNE_RESULT ' + JSON.stringify({size, stalePercent, samples, shifts: sample(size, stalePercent, true).shifts}));
+    }
+  }
+});
+
+test('prune preserves order and navigation across partially surviving days and repeated cleanup', () => {
+  const {FindResults} = environment().load('findResults');
+  const r = new FindResults();
+  const a = '2026-01-01', b = '2026-01-02', c = '2026-01-03';
+  r.set(c, 'c', 0, 4, 1);
+  r.set(a, 'a3', 2, 3, 2);
+  r.set(a, 'a2', 1, 2, 1);
+  r.set(a, 'a1', 0, 1, 2);
+  r.set(b, 'b', 0, 2, 3);
+  r.prune(2);
+  assert.equal(r.total, 6);
+  assert.equal(r.note('a2'), null);
+  assert.equal(r.note('c'), null);
+  assert.equal(r.first(a).path, 'a1');
+  assert.equal(r.last(a).path, 'a3');
+  assert.equal(r.after(r.last(a), 1).path, 'b');
+  assert.equal(r.before(r.first(b), 1).path, 'a3');
+  assert.equal(r.indexOf(r.last(a), 1), 3);
+  assert.equal(r.indexOf(r.last(a), -1), 5);
+  r.prune(2); assert.equal(r.total, 6);
+  r.prune(3); assert.equal(r.total, 2); assert.equal(r.firstKey(1), b);
+  r.prune(4); assert.equal(r.total, 0); assert.equal(r.firstKey(-1), null);
+  assert.equal(r.noteKeys.size, 0); assert.equal(r.days.size, 0);
+  r.set(c, 'c', 0, 4, 5); assert.equal(r.total, 4); assert.equal(r.firstKey(1), c);
+});
+
 test('a late read cannot replace newer content from a metadata event', async () => {
   const e = environment(); const f = e.entryFixture('old');
   f.entry.editor = null; f.entry.renderPreview = async () => {}; f.entry.host.onEntryContentChanged = () => {};
