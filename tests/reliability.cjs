@@ -8,7 +8,7 @@ const {test} = require('node:test');
 const ts = require('typescript');
 const root = path.resolve(__dirname, '..');
 
-function environment() {
+function environment(overrides = {}) {
   const notices = [];
   const timers = new Map();
   let timerId = 0;
@@ -40,7 +40,7 @@ function environment() {
     if (modules.has(file)) return modules.get(file).exports;
     const module = {exports: {}};
     modules.set(file, module);
-    let source = fs.readFileSync(file, 'utf8');
+    let source = overrides[name] ?? fs.readFileSync(file, 'utf8');
     if (name === 'editor') source += '\nexport { RichEditor, resolveEditorCtor };';
     const js = ts.transpileModule(source, {compilerOptions: {module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020}}).outputText;
     const customRequire = spec => spec === 'obsidian' ? obsidian : spec.startsWith('.') ? load(path.basename(spec)) : require(spec);
@@ -247,8 +247,13 @@ test('turning filters on and off still returns the correct dates and frees filte
 });
 
 test('benchmark pruning stale search results at different densities', () => {
-  const {FindResults} = environment().load('findResults');
-  function sample(size, stalePercent, instrument) {
+  const candidate = fs.readFileSync(path.join(root, 'src', 'findResults.ts'), 'utf8');
+  const baseline = candidate.replace("\t\tlet removedDay = false;\n\t\tfor (const [key, day] of this.days) {\n\t\t\tlet kept = 0;\n\t\t\tfor (const note of day.notes) {\n\t\t\t\tif (note.generation < generation) {\n\t\t\t\t\tthis.noteKeys.delete(note.path);\n\t\t\t\t\tday.count -= note.count;\n\t\t\t\t\tthis.total -= note.count;\n\t\t\t\t} else {\n\t\t\t\t\tday.notes[kept++] = note;\n\t\t\t\t}\n\t\t\t}\n\t\t\tif (kept === day.notes.length) continue;\n\t\t\tday.notes.length = kept;\n\t\t\tif (!kept) {\n\t\t\t\tthis.days.delete(key);\n\t\t\t\tremovedDay = true;\n\t\t\t}\n\t\t}\n\t\tif (removedDay) this.keys = this.keys.filter((key) => this.days.has(key));", "\t\tconst stale: string[] = [];\n\t\tfor (const day of this.days.values()) {\n\t\t\tfor (const note of day.notes) if (note.generation < generation) stale.push(note.path);\n\t\t}\n\t\tfor (const path of stale) this.delete(path);");
+  assert.notEqual(baseline, candidate);
+  const hash = require('node:crypto').createHash('sha1').update('blob ' + Buffer.byteLength(baseline) + '\0').update(baseline).digest('hex');
+  assert.equal(hash, "a0508c7f1f0efe13417f3e0c2976217da5d6692a");
+  const variants = [baseline, candidate, candidate, baseline].map(source => environment({findResults: source}).load('findResults').FindResults);
+  function sample(size, stalePercent, instrument, FindResults) {
     const results = new FindResults();
     const keys = Array.from({length: size}, (_, i) => new Date(Date.UTC(1970, 0, i + 1)).toISOString().slice(0, 10));
     const survivors = [];
@@ -287,11 +292,42 @@ test('benchmark pruning stale search results at different densities', () => {
   console.log('PRUNE_ENV ' + JSON.stringify({node: process.version, cpu: require('node:os').cpus()[0]?.model}));
   for (const size of [365, 2000, 10000]) {
     for (const stalePercent of [0, 50, 90]) {
-      sample(size, stalePercent, false);
-      const samples = Array.from({length: 5}, () => sample(size, stalePercent, false));
-      console.log('PRUNE_RESULT ' + JSON.stringify({size, stalePercent, samples, shifts: sample(size, stalePercent, true).shifts}));
+      for (const [i, FindResults] of variants.entries()) {
+        sample(size, stalePercent, false, FindResults);
+        const samples = Array.from({length: 5}, () => sample(size, stalePercent, false, FindResults));
+        const variant = i === 0 || i === 3 ? 'baseline' : 'candidate';
+        const shifts = sample(size, stalePercent, true, FindResults).shifts;
+        if (variant === 'candidate') assert.equal(shifts, 0);
+        console.log('PRUNE_RESULT ' + JSON.stringify({size, stalePercent, variant, samples, shifts}));
+      }
     }
   }
+});
+
+test('prune preserves order and navigation across partially surviving days and repeated cleanup', () => {
+  const {FindResults} = environment().load('findResults');
+  const r = new FindResults();
+  const a = '2026-01-01', b = '2026-01-02', c = '2026-01-03';
+  r.set(c, 'c', 0, 4, 1);
+  r.set(a, 'a3', 2, 3, 2);
+  r.set(a, 'a2', 1, 2, 1);
+  r.set(a, 'a1', 0, 1, 2);
+  r.set(b, 'b', 0, 2, 3);
+  r.prune(2);
+  assert.equal(r.total, 6);
+  assert.equal(r.note('a2'), null);
+  assert.equal(r.note('c'), null);
+  assert.equal(r.first(a).path, 'a1');
+  assert.equal(r.last(a).path, 'a3');
+  assert.equal(r.after(r.last(a), 1).path, 'b');
+  assert.equal(r.before(r.first(b), 1).path, 'a3');
+  assert.equal(r.indexOf(r.last(a), 1), 3);
+  assert.equal(r.indexOf(r.last(a), -1), 5);
+  r.prune(2); assert.equal(r.total, 6);
+  r.prune(3); assert.equal(r.total, 2); assert.equal(r.firstKey(1), b);
+  r.prune(4); assert.equal(r.total, 0); assert.equal(r.firstKey(-1), null);
+  assert.equal(r.noteKeys.size, 0); assert.equal(r.days.size, 0);
+  r.set(c, 'c', 0, 4, 5); assert.equal(r.total, 4); assert.equal(r.firstKey(1), c);
 });
 
 test('literal existence checks match full search semantics including Unicode and punctuation', () => {
