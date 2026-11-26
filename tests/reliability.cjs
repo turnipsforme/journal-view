@@ -218,6 +218,39 @@ test('cancelled search cannot select a result after an outstanding day load retu
   assert.equal(synced, 0); assert.equal(selections, 1);
 });
 
+test('an active find drops matches from loaded notes as soon as a tag filter excludes them', () => {
+  const e = environment();
+  const {JournalFind} = e.load('find');
+  const {FindResults} = e.load('findResults');
+  const day = '2026-11-26';
+  const excluded = `Journal/${day}.md`;
+  const allowed = `Journal/${day} Included.md`;
+  const notes = [excluded, allowed].map(path => ({
+    path, file: new e.TFile(path), isHidden: false,
+    searchText: () => 'needle', setFindState() {}, selectFindRange() {},
+  }));
+  const find = Object.create(JournalFind.prototype);
+  const results = new FindResults();
+  results.set(day, excluded, 0, 1, 1);
+  Object.assign(find, {
+    results, pass: {query: 'needle', expression: /needle/gi, generation: 2},
+    scheduleCount() {},
+    host: {
+      sections: [{key: day, isHidden: false, entries: notes}],
+      plugin: {
+        settings: {filterRules: [{kind: 'tag', mode: 'include', tag: 'included'}]},
+        filteredIndex: {matchesPath: path => path === allowed},
+      },
+    },
+  });
+
+  find.syncLive();
+
+  assert.equal(results.note(excluded), null);
+  assert.equal(results.first(day).path, allowed);
+  assert.equal(results.total, 1);
+});
+
 test('unfiltered index delegates navigation without duplicate scans or membership', () => {
   const e = environment(); const {FilteredDailyNoteIndex} = e.load('filter');
   let scans = 0;
